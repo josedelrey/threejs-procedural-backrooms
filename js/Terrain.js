@@ -1,16 +1,22 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.118/build/three.module.js';
 
 /**
- * BackroomsMaze - 3 rooms in a line with proper shared walls and door openings
+ * BackroomsMaze - N rooms connected by a self avoiding path with spacing.
  * Rules:
- *  - A cell builds only its North and West walls. South and East are built by neighbors.
- *  - If two adjacent cells connect, we create a doorway cutout (three segments).
- *  - No duplicated wall meshes, so no z-fighting glitches.
+ *  - A cell builds only its North and West walls. South and East are boundaries only.
+ *  - If two adjacent cells connect, create a doorway with jambs and lintel.
+ *  - No duplicated wall meshes.
+ * Path:
+ *  - Start at (0,0). First move chooses among {E, N, S}.
+ *  - Each next move chooses among the three directions that are not the opposite of the previous step.
+ *  - Additional constraint: the new room must not be adjacent to any already placed room
+ *    except the parent room. That prevents accidental contact and cycles around doors.
  */
 class Terrain {
-    constructor(scene) {
+    constructor(scene, params = {}) {
         this._scene = scene;
         this._group = null;
+        this._nRooms = Number.isInteger(params.nRooms) && params.nRooms > 0 ? params.nRooms : 12;
         this._Init();
     }
 
@@ -56,9 +62,12 @@ class Terrain {
         // Door constants
         const DOOR_WIDTH = 80;
         const DOOR_HEIGHT = 25;
-        const DOOR_LINTEL = ROOM_HEIGHT - DOOR_HEIGHT; // lintel height from floor to bottom of lintel
 
         const group = new THREE.Group();
+
+        // One global ambient to avoid brightness stacking
+        const globalAmbient = new THREE.AmbientLight(0xfcee65, 0.15);
+        group.add(globalAmbient);
 
         // Materials
         const floorMat = new THREE.MeshStandardMaterial({
@@ -73,55 +82,43 @@ class Terrain {
         const ceilLightMat = new THREE.MeshStandardMaterial({
             map: ceilLightColor, normalMap: ceilLightNormal, roughnessMap: ceilLightRough,
             emissiveMap: ceilLightEmiss, emissive: new THREE.Color(0xffffff),
-            emissiveIntensity: 0.35, metalness: 0.0, side: THREE.DoubleSide
+            emissiveIntensity: 0.2, metalness: 0.0, side: THREE.DoubleSide
         });
         const pillarMat = new THREE.MeshStandardMaterial({
             map: wallColor, normalMap: wallNormal, roughness: 0.8, metalness: 0.0
         });
 
-        // Helper to build a full wall slab (no door)
-        const makeFullWall = (length, height, thickness, mat) => {
-            return new THREE.Mesh(new THREE.BoxGeometry(length, height, thickness), mat);
-        };
+        // Geometry helpers
+        const makeFullWall = (length, height, thickness, mat) =>
+            new THREE.Mesh(new THREE.BoxGeometry(length, height, thickness), mat);
 
-        // Helper to build a wall with a centered doorway
-        // We build: left segment, right segment, top lintel
         const addWallWithDoor = (parent, isHorizontal, roomCenter, mat) => {
             const half = ROOM_SIZE / 2;
-            const halfDoor = DOOR_WIDTH / 2;
-
-            const segThickness = WALL_THICK;
             const yCenter = ROOM_HEIGHT / 2;
+            const segThickness = WALL_THICK;
 
-            // Horizontal wall along X, facing North or South
             if (isHorizontal) {
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
-                // Left jamb segment
                 const left = makeFullWall(sideLen, ROOM_HEIGHT, segThickness, mat);
                 left.position.set(roomCenter.x - (half - sideLen / 2), yCenter, roomCenter.z);
-                left.rotation.y = 0; // along X, thickness in Z
                 parent.add(left);
 
-                // Right jamb segment
                 const right = makeFullWall(sideLen, ROOM_HEIGHT, segThickness, mat);
                 right.position.set(roomCenter.x + (half - sideLen / 2), yCenter, roomCenter.z);
                 parent.add(right);
 
-                // Lintel segment above door
                 const lintelHeight = ROOM_HEIGHT - DOOR_HEIGHT;
                 const lintel = makeFullWall(DOOR_WIDTH, lintelHeight, segThickness, mat);
                 lintel.position.set(roomCenter.x, DOOR_HEIGHT + lintelHeight / 2, roomCenter.z);
                 parent.add(lintel);
             } else {
-                // Vertical wall along Z, facing East or West
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
                 const left = makeFullWall(segThickness, ROOM_HEIGHT, sideLen, mat);
                 left.position.set(roomCenter.x, yCenter, roomCenter.z - (half - sideLen / 2));
-                left.rotation.y = 0;
                 parent.add(left);
 
                 const right = makeFullWall(segThickness, ROOM_HEIGHT, sideLen, mat);
@@ -135,28 +132,24 @@ class Terrain {
             }
         };
 
-        // Build one room contents except boundary walls
+        // Build one room shell
         const buildRoomShell = (parent, cx, cz) => {
-            // Floor
             const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE), floorMat);
             floor.rotation.x = -Math.PI / 2;
             floor.position.set(cx, 0, cz);
             floor.receiveShadow = true;
             parent.add(floor);
 
-            // Ceiling tiles
             const ceilingTiles = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE), ceilTileMat);
             ceilingTiles.rotation.x = Math.PI / 2;
             ceilingTiles.position.set(cx, ROOM_HEIGHT, cz);
             parent.add(ceilingTiles);
 
-            // Central light panel
             const ceilingLight = new THREE.Mesh(new THREE.PlaneGeometry(CENTER_LIGHT_SIZE, CENTER_LIGHT_SIZE), ceilLightMat);
             ceilingLight.rotation.x = Math.PI / 2;
             ceilingLight.position.set(cx, ROOM_HEIGHT - 0.01, cz);
             parent.add(ceilingLight);
 
-            // Pillars
             const pillarGeo = new THREE.BoxGeometry(PILLAR_SIZE, ROOM_HEIGHT, PILLAR_SIZE);
             const px = cx + (ROOM_SIZE / 2 - PILLAR_INSET);
             const nx = cx - (ROOM_SIZE / 2 - PILLAR_INSET);
@@ -176,12 +169,8 @@ class Terrain {
                 parent.add(pillar);
             }
 
-            // Ambient and a central bulb per room
-            const ambient = new THREE.AmbientLight(0xfcee65, 0.2);
-            ambient.position.set(cx, ROOM_HEIGHT, cz);
-            parent.add(ambient);
-
-            const bulb = new THREE.PointLight(0xfcee65, 1.0, ROOM_SIZE * 1.2, 2.0);
+            // Per room bulb only, softened to avoid stacking
+            const bulb = new THREE.PointLight(0xfcee65, 0.6, ROOM_SIZE * 0.85, 2.0);
             bulb.position.set(cx, ROOM_HEIGHT - 1.5, cz);
             bulb.castShadow = true;
             bulb.shadow.mapSize.set(1024, 1024);
@@ -189,44 +178,157 @@ class Terrain {
             parent.add(bulb);
         };
 
-        // Grid for 3 rooms in a line: indices 0,1,2 on X
-        const N = 3;
-        const cells = [];
-        for (let i = 0; i < N; i++) {
-            const cx = (i - Math.floor(N / 2)) * ROOM_SIZE; // center them around origin
-            const cz = 0;
-            cells.push({ i, j: 0, cx, cz });
-        }
+        // Path generation
+        const DIRS = {
+            E: { di: 1, dj: 0, opposite: 'W' },
+            N: { di: 0, dj: 1, opposite: 'S' },
+            S: { di: 0, dj: -1, opposite: 'N' },
+            W: { di: -1, dj: 0, opposite: 'E' },
+        };
 
-        // Connectivity for a simple corridor:
-        // room 0 connected to room 1, room 1 connected to room 2
-        // We store openings as booleans on E, W, N, S
-        const openings = new Map(); // key "i,j" -> {N,S,E,W}
-        const key = (i, j) => `${i},${j}`;
+        const shuffle = (arr) => {
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = (Math.random() * (i + 1)) | 0;
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+            return arr;
+        };
 
-        for (const c of cells) openings.set(key(c.i, c.j), { N: false, S: false, E: false, W: false });
-        for (let i = 0; i < N; i++) {
-            if (i < N - 1) {
-                openings.get(key(i, 0)).E = true;       // open east from room i to i+1
-                openings.get(key(i + 1, 0)).W = true;   // open west from room i+1 to i
+        const targetLen = this._nRooms;
+        const path = [];
+        const used = new Set();
+        const keyIJ = (i, j) => `${i},${j}`;
+
+        // Quick neighbor key
+        const kE = (i, j) => keyIJ(i + 1, j);
+        const kW = (i, j) => keyIJ(i - 1, j);
+        const kN = (i, j) => keyIJ(i, j + 1);
+        const kS = (i, j) => keyIJ(i, j - 1);
+
+        // Check that (ni, nj) does not touch any used cell except the parent (pi, pj)
+        const isPlacementSafe = (ni, nj, pi, pj) => {
+            const parentKey = pi === null ? null : keyIJ(pi, pj);
+            const neighbors = [kE(ni, nj), kW(ni, nj), kN(ni, nj), kS(ni, nj)];
+            for (const nb of neighbors) {
+                if (used.has(nb) && nb !== parentKey) return false;
+            }
+            return true;
+        };
+
+        // Start at origin
+        path.push({ i: 0, j: 0 });
+        used.add(keyIJ(0, 0));
+
+        // Decision stack for DFS
+        const stack = [];
+        stack.push({ i: 0, j: 0, prevDir: null, options: shuffle(['E', 'N', 'S'].slice()) });
+
+        while (path.length < targetLen) {
+            if (stack.length === 0) {
+                console.warn('Failed to build full path. Built', path.length, 'rooms.');
+                break;
+            }
+            const top = stack[stack.length - 1];
+
+            let advanced = false;
+            while (top.options.length > 0) {
+                const d = top.options.pop();
+
+                // Candidate neighbor
+                const ni = top.i + DIRS[d].di;
+                const nj = top.j + DIRS[d].dj;
+                const k = keyIJ(ni, nj);
+
+                // Reject if already used
+                if (used.has(k)) continue;
+
+                // Enforce spacing: do not allow touching any other used cell except the parent
+                const parentI = top.i;
+                const parentJ = top.j;
+                if (!isPlacementSafe(ni, nj, parentI, parentJ)) continue;
+
+                // Accept this step
+                path.push({ i: ni, j: nj });
+                used.add(k);
+
+                // Next options: all four except the opposite of d -> three directions
+                const nextOptions = ['E', 'N', 'S', 'W'].filter(dd => dd !== DIRS[d].opposite);
+                stack.push({ i: ni, j: nj, prevDir: d, options: shuffle(nextOptions) });
+                advanced = true;
+                break;
+            }
+
+            if (!advanced) {
+                // Backtrack
+                stack.pop();
+                if (path.length > 1) {
+                    const last = path.pop();
+                    used.delete(keyIJ(last.i, last.j));
+                }
             }
         }
 
-        // Build shells first
+        // Map path to cells
+        const cells = path.map(({ i, j }) => ({ i, j }));
+
+        // Center cluster around origin
+        let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
+        for (const c of cells) {
+            if (c.i < minI) minI = c.i;
+            if (c.i > maxI) maxI = c.i;
+            if (c.j < minJ) minJ = c.j;
+            if (c.j > maxJ) maxJ = c.j;
+        }
+        const midI = (minI + maxI) / 2;
+        const midJ = (minJ + maxJ) / 2;
+
+        for (const c of cells) {
+            c.cx = (c.i - midI) * ROOM_SIZE;
+            c.cz = (c.j - midJ) * ROOM_SIZE;
+        }
+
+        // Openings by cell
+        const openings = new Map();
+        const getKey = (i, j) => `${i},${j}`;
+        for (const c of cells) openings.set(getKey(c.i, c.j), { N: false, S: false, E: false, W: false });
+
+        // Mark openings between consecutive rooms
+        for (let idx = 0; idx < cells.length - 1; idx++) {
+            const a = cells[idx];
+            const b = cells[idx + 1];
+            const di = b.i - a.i;
+            const dj = b.j - a.j;
+
+            if (di === 1 && dj === 0) {
+                openings.get(getKey(b.i, b.j)).W = true;
+                openings.get(getKey(a.i, a.j)).E = true;
+            } else if (di === 0 && dj === 1) {
+                openings.get(getKey(a.i, a.j)).N = true;
+                openings.get(getKey(b.i, b.j)).S = true;
+            } else if (di === 0 && dj === -1) {
+                openings.get(getKey(b.i, b.j)).N = true;
+                openings.get(getKey(a.i, a.j)).S = true;
+            } else {
+                console.warn('Non adjacent step in path', a, b);
+            }
+        }
+
+        // Build shells
         for (const c of cells) buildRoomShell(group, c.cx, c.cz);
 
-        // Build boundary walls per cell using the owner rule
-        // Each cell builds North and West walls
-        for (const c of cells) {
-            const o = openings.get(key(c.i, c.j));
+        // Neighbor lookup
+        const cellSet = new Set(cells.map(c => getKey(c.i, c.j)));
+        const hasNeighbor = (i, j) => cellSet.has(getKey(i, j));
 
-            // North wall - centered at z = cz + ROOM_SIZE/2, along X
+        // Owner rule walls, with door openings
+        for (const c of cells) {
+            const o = openings.get(getKey(c.i, c.j));
+
+            // North wall
             {
                 const wallZ = c.cz + ROOM_SIZE / 2;
                 const center = new THREE.Vector3(c.cx, 0, wallZ);
-                const hasNeighborNorth = false; // 1×N line, no neighbor on N
-                const open = false; // do not open outer boundary
-                if (open) {
+                if (o.N) {
                     addWallWithDoor(group, true, center, wallMat);
                 } else {
                     const northWall = makeFullWall(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat);
@@ -235,13 +337,11 @@ class Terrain {
                 }
             }
 
-            // West wall - centered at x = cx - ROOM_SIZE/2, along Z
+            // West wall
             {
                 const wallX = c.cx - ROOM_SIZE / 2;
                 const center = new THREE.Vector3(wallX, 0, c.cz);
-                // If there is a neighbor to the West, this cell should still own West.
-                const hasNeighborWest = cells.some(k => k.i === c.i - 1 && k.j === c.j);
-                const open = hasNeighborWest ? o.W : false; // open only if neighbor exists
+                const open = hasNeighbor(c.i - 1, c.j) ? o.W : false;
                 if (open) {
                     addWallWithDoor(group, false, center, wallMat);
                 } else {
@@ -252,40 +352,21 @@ class Terrain {
             }
         }
 
-        // Now add the South and East walls for the outer boundary only
-        // They belong to boundary cells by our owner rule, but we must close the maze edges
-        // South: only build once for any cell that has no neighbor South and did not already own it
-        // East: only build once for any cell that has no neighbor East and did not already own it
+        // Close outer South and East boundaries
         for (const c of cells) {
-            const o = openings.get(key(c.i, c.j));
-
-            // South boundary - only on last row, which we always are
-            {
+            if (!hasNeighbor(c.i, c.j - 1)) {
                 const wallZ = c.cz - ROOM_SIZE / 2;
                 const center = new THREE.Vector3(c.cx, 0, wallZ);
-                // South is outer boundary in this layout
                 const southWall = makeFullWall(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat);
                 southWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
                 group.add(southWall);
             }
-
-            // East boundary - only if no neighbor to the East
-            {
-                const hasNeighborEast = cells.some(k => k.i === c.i + 1 && k.j === c.j);
-                if (!hasNeighborEast) {
-                    const wallX = c.cx + ROOM_SIZE / 2;
-                    const center = new THREE.Vector3(wallX, 0, c.cz);
-                    // Outer boundary must be closed, even if o.E was true in some other layout
-                    const eastWall = makeFullWall(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE, wallMat);
-                    eastWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
-                    group.add(eastWall);
-                } else {
-                    // If there is a neighbor East, and we want an opening, the owner is the left cell for the shared North and West rule.
-                    // Our rule already handled that by having the left cell not build East at all.
-                    // We still need the doorway on the shared boundary. The doorway is created by the left cell's East opening handled via its neighbor's West build.
-                    // In our implementation, West walls are built by each cell as owner. We opened West above if openings said so.
-                    // Nothing to do here.
-                }
+            if (!hasNeighbor(c.i + 1, c.j)) {
+                const wallX = c.cx + ROOM_SIZE / 2;
+                const center = new THREE.Vector3(wallX, 0, c.cz);
+                const eastWall = new THREE.Mesh(new THREE.BoxGeometry(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE), wallMat);
+                eastWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
+                group.add(eastWall);
             }
         }
 
