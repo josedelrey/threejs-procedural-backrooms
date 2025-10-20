@@ -11,9 +11,9 @@ class Terrain {
         this._sun = null;
         this._ceilLightMat = null;
 
-        // new: spawn and room list
-        this.spawn = null;     // THREE.Vector3 once computed
-        this._rooms = [];      // [{i, j, cx, cz}, ...]
+        this.spawn = null;      // THREE.Vector3
+        this._rooms = [];       // [{i,j,cx,cz}]
+        this._colliders = [];   // [{minX,maxX,minZ,maxZ}]
 
         this._Init();
     }
@@ -48,7 +48,7 @@ class Terrain {
         ceilTileColor.repeat.set(TILE_REPEAT, TILE_REPEAT);
         ceilLightCol.repeat.set(LIGHT_REPEAT, LIGHT_REPEAT);
 
-        // Room constants
+        // Dimensions
         const ROOM_SIZE = 300;
         const ROOM_HEIGHT = 40;
         const WALL_THICK = 2;
@@ -56,13 +56,12 @@ class Terrain {
         const PILLAR_INSET = 100;
         const CENTER_LIGHT_SIZE = 30;
 
-        // Door constants
         const DOOR_WIDTH = 80;
         const DOOR_HEIGHT = 25;
 
         const group = new THREE.Group();
 
-        // Lighting
+        // Lights
         const hemi = new THREE.HemisphereLight(0xf6f3cc, 0x2b2b1e, 0.7);
         group.add(hemi);
 
@@ -80,7 +79,6 @@ class Terrain {
             roughness: 0.95,
             metalness: 0.0,
         });
-
         const wallMat = new THREE.MeshLambertMaterial({ map: wallColor });
         const ceilTileMat = new THREE.MeshLambertMaterial({ map: ceilTileColor });
         const ceilLightMat = new THREE.MeshBasicMaterial({ map: ceilLightCol, side: THREE.DoubleSide });
@@ -88,69 +86,82 @@ class Terrain {
 
         const pillarMat = new THREE.MeshLambertMaterial({ map: wallColor });
 
-        // Shared geometries
+        // Shared geos
         const GEO_FLOOR = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_CEILING = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_LIGHT = new THREE.PlaneGeometry(CENTER_LIGHT_SIZE, CENTER_LIGHT_SIZE);
 
-        // Helpers
-        const makeFullWall = (length, height, thickness, mat) =>
-            new THREE.Mesh(new THREE.BoxGeometry(length, height, thickness), mat);
+        // Collider utils
+        const addRectCollider = (minX, maxX, minZ, maxZ) => {
+            this._colliders.push({ minX, maxX, minZ, maxZ });
+        };
+
+        // Wall helper with explicit X (width) and Z (depth) sizes
+        const createWallXZ = (sizeX, height, sizeZ, mat, center, registerCollider = true) => {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), mat);
+            mesh.position.copy(center);
+            if (registerCollider) {
+                const cx = center.x, cz = center.z;
+                addRectCollider(cx - sizeX * 0.5, cx + sizeX * 0.5, cz - sizeZ * 0.5, cz + sizeZ * 0.5);
+            }
+            return mesh;
+        };
 
         const freeze = (mesh) => {
             mesh.matrixAutoUpdate = false;
             mesh.updateMatrix();
         };
 
-        const addWallWithDoor = (parent, isHorizontal, roomCenter, mat) => {
+        // Door builder
+        const addWallWithDoor = (parent, isHorizontal, roomCenterXZ, mat) => {
             const half = ROOM_SIZE / 2;
             const yCenter = ROOM_HEIGHT / 2;
             const segThickness = WALL_THICK;
 
             if (isHorizontal) {
+                // along X, thin Z
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
-                const left = makeFullWall(sideLen, ROOM_HEIGHT, segThickness, mat);
-                left.position.set(roomCenter.x - (half - sideLen / 2), yCenter, roomCenter.z);
-                parent.add(left); freeze(left);
+                const leftC = new THREE.Vector3(roomCenterXZ.x - (half - sideLen / 2), yCenter, roomCenterXZ.z);
+                const rightC = new THREE.Vector3(roomCenterXZ.x + (half - sideLen / 2), yCenter, roomCenterXZ.z);
 
-                const right = makeFullWall(sideLen, ROOM_HEIGHT, segThickness, mat);
-                right.position.set(roomCenter.x + (half - sideLen / 2), yCenter, roomCenter.z);
+                const left = createWallXZ(sideLen, ROOM_HEIGHT, segThickness, mat, leftC, true);
+                const right = createWallXZ(sideLen, ROOM_HEIGHT, segThickness, mat, rightC, true);
+                parent.add(left); freeze(left);
                 parent.add(right); freeze(right);
 
-                const lintelHeight = ROOM_HEIGHT - DOOR_HEIGHT;
-                const lintel = makeFullWall(DOOR_WIDTH, lintelHeight, segThickness, mat);
-                lintel.position.set(roomCenter.x, DOOR_HEIGHT + lintelHeight / 2, roomCenter.z);
+                // lintel (no collider)
+                const lintelH = ROOM_HEIGHT - DOOR_HEIGHT;
+                const lintelC = new THREE.Vector3(roomCenterXZ.x, DOOR_HEIGHT + lintelH / 2, roomCenterXZ.z);
+                const lintel = createWallXZ(DOOR_WIDTH, lintelH, segThickness, mat, lintelC, false);
                 parent.add(lintel); freeze(lintel);
             } else {
+                // along Z, thin X
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
-                const left = makeFullWall(segThickness, ROOM_HEIGHT, sideLen, mat);
-                left.position.set(roomCenter.x, yCenter, roomCenter.z - (half - sideLen / 2));
-                parent.add(left); freeze(left);
+                const leftC = new THREE.Vector3(roomCenterXZ.x, yCenter, roomCenterXZ.z - (half - sideLen / 2));
+                const rightC = new THREE.Vector3(roomCenterXZ.x, yCenter, roomCenterXZ.z + (half - sideLen / 2));
 
-                const right = makeFullWall(segThickness, ROOM_HEIGHT, sideLen, mat);
-                right.position.set(roomCenter.x, yCenter, roomCenter.z + (half - sideLen / 2));
+                const left = createWallXZ(segThickness, ROOM_HEIGHT, sideLen, mat, leftC, true);
+                const right = createWallXZ(segThickness, ROOM_HEIGHT, sideLen, mat, rightC, true);
+                parent.add(left); freeze(left);
                 parent.add(right); freeze(right);
 
-                const lintelHeight = ROOM_HEIGHT - DOOR_HEIGHT;
-                const lintel = makeFullWall(segThickness, lintelHeight, DOOR_WIDTH, mat);
-                lintel.position.set(roomCenter.x, DOOR_HEIGHT + lintelHeight / 2, roomCenter.z);
+                const lintelH = ROOM_HEIGHT - DOOR_HEIGHT;
+                const lintelC = new THREE.Vector3(roomCenterXZ.x, DOOR_HEIGHT + lintelH / 2, roomCenterXZ.z);
+                const lintel = createWallXZ(segThickness, lintelH, DOOR_WIDTH, mat, lintelC, false);
                 parent.add(lintel); freeze(lintel);
             }
         };
 
-        // Maze generation with randomized DFS
-
-        // Choose a compact grid that fits at least n rooms
+        // ---------- Maze generation ----------
         const targetRooms = this._nRooms;
         let rows = Math.floor(Math.sqrt(targetRooms));
         if (rows < 1) rows = 1;
         let cols = Math.ceil(targetRooms / rows);
 
-        // Direction helpers
         const DIRS = {
             N: { di: 0, dj: 1, opposite: 'S' },
             S: { di: 0, dj: -1, opposite: 'N' },
@@ -159,23 +170,14 @@ class Terrain {
         };
         const dirKeys = ['N', 'S', 'E', 'W'];
 
-        const shuffle = (arr) => {
-            for (let i = arr.length - 1; i > 0; i--) {
-                const j = (Math.random() * (i + 1)) | 0;
-                [arr[i], arr[j]] = [arr[j], arr[i]];
-            }
-            return arr;
-        };
-
+        const shuffle = (arr) => { for (let i = arr.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; };
         const idx = (i, j) => j * cols + i;
         const inBounds = (i, j) => i >= 0 && i < cols && j >= 0 && j < rows;
 
-        // Openings for every cell in the full grid
         const gridOpen = Array.from({ length: cols * rows }, () => ({ N: false, S: false, E: false, W: false }));
         const visited = Array.from({ length: cols * rows }, () => false);
         const visitOrder = [];
 
-        // DFS stack
         const startI = 0, startJ = 0;
         const stack = [{ i: startI, j: startJ }];
         visited[idx(startI, startJ)] = true;
@@ -185,7 +187,6 @@ class Terrain {
             const top = stack[stack.length - 1];
             const options = shuffle(dirKeys.slice());
             let advanced = false;
-
             for (const d of options) {
                 const ni = top.i + DIRS[d].di;
                 const nj = top.j + DIRS[d].dj;
@@ -193,7 +194,6 @@ class Terrain {
                 const nIndex = idx(ni, nj);
                 if (visited[nIndex]) continue;
 
-                // Carve passage both ways
                 gridOpen[idx(top.i, top.j)][d] = true;
                 gridOpen[nIndex][DIRS[d].opposite] = true;
 
@@ -206,35 +206,23 @@ class Terrain {
             if (!advanced) stack.pop();
         }
 
-        // Take only the first targetRooms cells to build
         const builtCells = visitOrder.slice(0, targetRooms);
 
-        // Center cluster
+        // center cluster
         let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
-        for (const c of builtCells) {
-            if (c.i < minI) minI = c.i;
-            if (c.i > maxI) maxI = c.i;
-            if (c.j < minJ) minJ = c.j;
-            if (c.j > maxJ) maxJ = c.j;
-        }
-        const midI = (minI + maxI) / 2;
-        const midJ = (minJ + maxJ) / 2;
+        for (const c of builtCells) { if (c.i < minI) minI = c.i; if (c.i > maxI) maxI = c.i; if (c.j < minJ) minJ = c.j; if (c.j > maxJ) maxJ = c.j; }
+        const midI = (minI + maxI) / 2, midJ = (minJ + maxJ) / 2;
         for (const c of builtCells) {
             c.cx = (c.i - midI) * ROOM_SIZE;
             c.cz = (c.j - midJ) * ROOM_SIZE;
         }
 
-        // new: remember rooms and compute spawn from the first room
+        // spawn + rooms
         this._rooms = builtCells.map(r => ({ i: r.i, j: r.j, cx: r.cx, cz: r.cz }));
-        if (this._rooms.length > 0) {
-            const first = this._rooms[0];
-            const spawnY = 0; // eye height above floor
-            this.spawn = new THREE.Vector3(first.cx, spawnY, first.cz);
-        } else {
-            this.spawn = new THREE.Vector3(0, 5, 0);
-        }
+        this.spawn = this._rooms.length ? new THREE.Vector3(this._rooms[0].cx, 0, this._rooms[0].cz)
+            : new THREE.Vector3(0, 0, 0);
 
-        // Build shells for each room
+        // shells
         const buildRoomShell = (parent, cx, cz) => {
             const floor = new THREE.Mesh(GEO_FLOOR, floorMat);
             floor.rotation.x = -Math.PI / 2;
@@ -252,35 +240,28 @@ class Terrain {
             parent.add(ceilingLight); freeze(ceilingLight);
         };
 
-        // Opening map restricted to built cells only
         const key = (i, j) => `${i},${j}`;
         const builtSet = new Set(builtCells.map(c => key(c.i, c.j)));
         const openings = new Map();
-        for (const c of builtCells) {
-            openings.set(key(c.i, c.j), { N: false, S: false, E: false, W: false });
-        }
+        for (const c of builtCells) openings.set(key(c.i, c.j), { N: false, S: false, E: false, W: false });
         for (const c of builtCells) {
             const o = gridOpen[idx(c.i, c.j)];
             for (const d of dirKeys) {
-                const ni = c.i + DIRS[d].di;
-                const nj = c.j + DIRS[d].dj;
+                const ni = c.i + DIRS[d].di, nj = c.j + DIRS[d].dj;
                 if (!o[d]) continue;
                 if (!builtSet.has(key(ni, nj))) continue;
                 openings.get(key(c.i, c.j))[d] = true;
             }
         }
 
-        // Build shells first
         for (const c of builtCells) buildRoomShell(group, c.cx, c.cz);
 
-        // Instanced pillars
+        // pillars + colliders
         const pillarGeo = new THREE.BoxGeometry(PILLAR_SIZE, ROOM_HEIGHT, PILLAR_SIZE);
         const pillarsPerRoom = 4;
-        const instancedPillars = new THREE.InstancedMesh(
-            pillarGeo, pillarMat, builtCells.length * pillarsPerRoom
-        );
+        const instancedPillars = new THREE.InstancedMesh(pillarGeo, pillarMat, builtCells.length * pillarsPerRoom);
         instancedPillars.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        let pillarInstanceIndex = 0;
+        let pIdx = 0;
         const m4 = new THREE.Matrix4();
         for (const c of builtCells) {
             const px = c.cx + (ROOM_SIZE / 2 - PILLAR_INSET);
@@ -290,62 +271,60 @@ class Terrain {
             const y = ROOM_HEIGHT / 2;
             for (const [x, z] of [[px, pz], [nx, pz], [px, nz], [nx, nz]]) {
                 m4.makeTranslation(x, y, z);
-                instancedPillars.setMatrixAt(pillarInstanceIndex++, m4);
+                instancedPillars.setMatrixAt(pIdx++, m4);
+                // pillar collider square
+                const half = PILLAR_SIZE * 0.5;
+                addRectCollider(x - half, x + half, z - half, z + half);
             }
         }
         instancedPillars.instanceMatrix.needsUpdate = true;
         group.add(instancedPillars);
 
-        // Neighbor lookup
         const hasNeighbor = (i, j) => builtSet.has(key(i, j));
 
-        // Walls with door openings
+        // walls with door openings
         for (const c of builtCells) {
             const o = openings.get(key(c.i, c.j));
 
-            // North wall
+            // North edge — spans along X at z + half
             {
                 const wallZ = c.cz + ROOM_SIZE / 2;
-                const center = new THREE.Vector3(c.cx, 0, wallZ);
                 if (o.N) {
-                    addWallWithDoor(group, true, center, wallMat);
+                    addWallWithDoor(group, true, new THREE.Vector3(c.cx, 0, wallZ), wallMat);
                 } else {
-                    const northWall = makeFullWall(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat);
-                    northWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
-                    group.add(northWall); freeze(northWall);
+                    const center = new THREE.Vector3(c.cx, ROOM_HEIGHT / 2, wallZ);
+                    const north = createWallXZ(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat, center, true);
+                    group.add(north); freeze(north);
                 }
             }
 
-            // West wall
+            // West edge — spans along Z at x - half
             {
                 const wallX = c.cx - ROOM_SIZE / 2;
-                const center = new THREE.Vector3(wallX, 0, c.cz);
                 const open = hasNeighbor(c.i - 1, c.j) ? o.W : false;
                 if (open) {
-                    addWallWithDoor(group, false, center, wallMat);
+                    addWallWithDoor(group, false, new THREE.Vector3(wallX, 0, c.cz), wallMat);
                 } else {
-                    const westWall = makeFullWall(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE, wallMat);
-                    westWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
-                    group.add(westWall); freeze(westWall);
+                    const center = new THREE.Vector3(wallX, ROOM_HEIGHT / 2, c.cz);
+                    const west = createWallXZ(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE, wallMat, center, true);
+                    group.add(west); freeze(west);
                 }
             }
         }
 
-        // Close outer South and East boundaries
+        // close outer South and East boundaries
         for (const c of builtCells) {
             if (!hasNeighbor(c.i, c.j - 1)) {
                 const wallZ = c.cz - ROOM_SIZE / 2;
-                const center = new THREE.Vector3(c.cx, 0, wallZ);
-                const southWall = makeFullWall(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat);
-                southWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
-                group.add(southWall); freeze(southWall);
+                const center = new THREE.Vector3(c.cx, ROOM_HEIGHT / 2, wallZ);
+                const south = createWallXZ(ROOM_SIZE, ROOM_HEIGHT, WALL_THICK, wallMat, center, true);
+                group.add(south); freeze(south);
             }
             if (!hasNeighbor(c.i + 1, c.j)) {
                 const wallX = c.cx + ROOM_SIZE / 2;
-                const center = new THREE.Vector3(wallX, 0, c.cz);
-                const eastWall = new THREE.Mesh(new THREE.BoxGeometry(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE), wallMat);
-                eastWall.position.set(center.x, ROOM_HEIGHT / 2, center.z);
-                group.add(eastWall); freeze(eastWall);
+                const center = new THREE.Vector3(wallX, ROOM_HEIGHT / 2, c.cz);
+                const east = createWallXZ(WALL_THICK, ROOM_HEIGHT, ROOM_SIZE, wallMat, center, true);
+                group.add(east); freeze(east);
             }
         }
 
@@ -354,19 +333,10 @@ class Terrain {
     }
 
     getMesh() { return this._group; }
+    getFirstRoomCenter() { return this.spawn ? this.spawn.clone() : new THREE.Vector3(0, 0, 0); }
+    getRoomCenters() { return this._rooms.map(r => ({ cx: r.cx, cz: r.cz })); }
+    getColliders() { return this._colliders; }
 
-    // New helpers
-    getFirstRoomCenter() {
-        // Returns a clone so callers can modify it safely
-        return this.spawn ? this.spawn.clone() : new THREE.Vector3(0, 5, 0);
-    }
-
-    getRoomCenters() {
-        // Returns shallow copies [{cx, cz}, ...]
-        return this._rooms.map(r => ({ cx: r.cx, cz: r.cz }));
-    }
-
-    // Tiny fluorescent flicker
     Update(t) {
         if (this._ceilLightMat) {
             const f = 0.92 + 0.04 * Math.sin(t * 3.2) + 0.02 * Math.sin(t * 17.0) + 0.01 * Math.sin(t * 27.7);
