@@ -15,10 +15,16 @@ class Terrain {
         this._rooms = [];       // [{i,j,cx,cz}]
         this._colliders = [];   // [{minX,maxX,minZ,maxZ}]
 
-        // new for enemy placement
+        // room graph
         this._roomIndexByKey = new Map();
         this._graph = new Map();
         this._spawnIndex = 0;
+
+        // portal state
+        this._portal = null;
+        this._portalLight = null;
+        this._portalMat = null;
+        this._portalTime = 0;
 
         this._Init();
     }
@@ -124,7 +130,6 @@ class Terrain {
             const segThickness = WALL_THICK;
 
             if (isHorizontal) {
-                // along X, thin Z
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
@@ -136,13 +141,11 @@ class Terrain {
                 parent.add(left); freeze(left);
                 parent.add(right); freeze(right);
 
-                // lintel with no collider
                 const lintelH = ROOM_HEIGHT - DOOR_HEIGHT;
                 const lintelC = new THREE.Vector3(roomCenterXZ.x, DOOR_HEIGHT + lintelH / 2, roomCenterXZ.z);
                 const lintel = createWallXZ(DOOR_WIDTH, lintelH, segThickness, mat, lintelC, false);
                 parent.add(lintel); freeze(lintel);
             } else {
-                // along Z, thin X
                 const totalLen = ROOM_SIZE;
                 const sideLen = (totalLen - DOOR_WIDTH) / 2;
 
@@ -277,7 +280,6 @@ class Terrain {
             for (const [x, z] of [[px, pz], [nx, pz], [px, nz], [nx, nz]]) {
                 m4.makeTranslation(x, y, z);
                 instancedPillars.setMatrixAt(pIdx++, m4);
-                // pillar collider square
                 const half = PILLAR_SIZE * 0.5;
                 addRectCollider(x - half, x + half, z - half, z + half);
             }
@@ -381,6 +383,134 @@ class Terrain {
         return dist;
     }
 
+    // nearest room index to world position
+    _nearestRoomIndexTo(x, z) {
+        if (!this._rooms.length) return 0;
+        let best = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < this._rooms.length; i++) {
+            const dx = x - this._rooms[i].cx;
+            const dz = z - this._rooms[i].cz;
+            const d2 = dx * dx + dz * dz;
+            if (d2 < bestD) { bestD = d2; best = i; }
+        }
+        return best;
+    }
+
+    // furthest room center from a given world position
+    getFurthestRoomCenterFromPosition(pos) {
+        if (!pos || !pos.isVector3 || !this._rooms.length) return this.getFirstRoomCenter();
+        const startIdx = this._nearestRoomIndexTo(pos.x, pos.z);
+        const dist = this._bfsDistancesFrom(startIdx);
+        let farIdx = 0;
+        let farDist = -1;
+        for (let i = 0; i < dist.length; i++) {
+            if (dist[i] > farDist) { farDist = dist[i]; farIdx = i; }
+        }
+        const r = this._rooms[farIdx];
+        return new THREE.Vector3(r.cx, 0, r.cz);
+    }
+
+    // spawn a spiral-shader portal at the furthest room from given position
+    // opts: { radius, tube, color1, color2, speed, turns, thickness, y }
+    spawnPortalAtFurthest(fromWorldPos, opts = {}) {
+        const radius = opts.radius ?? 28;
+        const tube = opts.tube ?? 5;
+        const y = opts.y ?? 0;
+        const color1 = new THREE.Color(opts.color1 ?? 0xffffff);
+        const color2 = new THREE.Color(opts.color2 ?? 0x88aaff);
+        const speed = opts.speed ?? 1.6;
+        const turns = opts.turns ?? 8.0;
+        const thickness = opts.thickness ?? 0.35;
+
+        // remove old portal if any
+        if (this._portal) {
+            this._group.remove(this._portal);
+            this._portal.geometry?.dispose?.();
+            this._portal = null;
+        }
+        if (this._portalMat) {
+            this._portalMat.dispose?.();
+            this._portalMat = null;
+        }
+        if (this._portalLight) {
+            this._group.remove(this._portalLight);
+            this._portalLight = null;
+        }
+
+        const target = this.getFurthestRoomCenterFromPosition(fromWorldPos);
+
+        // geometry
+        const geo = new THREE.TorusGeometry(radius, tube, 16, 48);
+
+        // spiral shader
+        const mat = new THREE.ShaderMaterial({
+            uniforms: {
+                uTime: { value: 0 },
+                uColor1: { value: color1 },
+                uColor2: { value: color2 },
+                uSpeed: { value: speed },
+                uTurns: { value: turns },
+                uThickness: { value: thickness }
+            },
+            vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+            fragmentShader: `
+        precision mediump float;
+        varying vec2 vUv;
+        uniform float uTime;
+        uniform vec3  uColor1;
+        uniform vec3  uColor2;
+        uniform float uSpeed;
+        uniform float uTurns;
+        uniform float uThickness;
+
+        void main() {
+          vec2 p = vUv - 0.5;
+          float r = length(p) + 1e-4;
+          float a = atan(p.y, p.x);
+
+          // spiral bands
+          float s = sin(uTurns * a + 6.0 * log(r) - uSpeed * uTime);
+          float band = smoothstep(uThickness, uThickness - 0.15, abs(s));
+
+          // fade near outer edge
+          float edge = 1.0 - smoothstep(0.46, 0.5, r);
+
+          vec3 col = mix(uColor1, uColor2, band);
+          gl_FragColor = vec4(col, edge * 0.95);
+        }
+      `,
+            side: THREE.DoubleSide,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+
+        const ring = new THREE.Mesh(geo, mat);
+        ring.position.set(target.x, y + 10, target.z);
+        ring.rotation.x = Math.PI / 2;
+
+        const light = new THREE.PointLight(color2, 0.9, 500, 2.0);
+        light.position.set(target.x, y + 18, target.z);
+
+        this._group.add(ring);
+        this._group.add(light);
+
+        this._portal = ring;
+        this._portalLight = light;
+        this._portalMat = mat;
+        this._portalTime = 0;
+
+        return ring;
+    }
+
+    // exact N-steps room center if possible
     getRoomCenterAtSteps(steps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
 
@@ -411,7 +541,7 @@ class Terrain {
         return new THREE.Vector3(r.cx, 0, r.cz);
     }
 
-    // Returns a random room center at least minSteps from the spawn
+    // random room center at least minSteps from the spawn
     getRandomFarRoomCenter(minSteps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
         const dist = this._bfsDistancesFrom(this._spawnIndex ?? 0);
@@ -435,6 +565,18 @@ class Terrain {
         }
         if (this._sun) {
             this._sun.intensity = 0.33 + 0.02 * Math.sin(t * 0.35);
+        }
+
+        // animate portal
+        if (this._portal) {
+            this._portalTime += t;                   // accumulate seconds
+            this._portal.rotation.z += 0.6 * t;      // slow spin
+            if (this._portalMat) {
+                this._portalMat.uniforms.uTime.value = this._portalTime;
+            }
+            if (this._portalLight) {
+                this._portalLight.intensity = 0.5 + 0.2 * Math.sin(this._portalTime * 2.6);
+            }
         }
     }
 

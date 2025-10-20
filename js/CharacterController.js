@@ -1,3 +1,4 @@
+// CharacterController.js
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.118/build/three.module.js';
 import { FBXLoader } from 'https://cdn.jsdelivr.net/npm/three@0.118.1/examples/jsm/loaders/FBXLoader.js';
 import { CharacterFSM } from './StateMachine.js';
@@ -22,14 +23,25 @@ class BasicCharacterController {
                 ? params.startPosition.clone()
                 : new THREE.Vector3(0, 0, 0);
 
-        // collisions
-        this._radius = 5; // was 12; 10 fits your 0.3-scaled rig better
+        this._radius = 5;
         this._colliders = Array.isArray(params.colliders) ? params.colliders : [];
         this._getHeightAt = typeof params.getHeightAt === 'function' ? params.getHeightAt : (() => 0);
 
+        // HP
+        this._hpMax = 100;
+        this._hp = 100;
+        this._onHpChange = typeof params.onHpChange === 'function' ? params.onHpChange : (() => { });
+
+        // Animations and FSM
         this._animations = {};
         this._input = new BasicCharacterControllerInput();
         this._stateMachine = new CharacterFSM(new BasicCharacterControllerProxy(this._animations));
+
+        // Hurt override control
+        this._hurtActive = false;
+        this._hurtUntilMS = 0;
+        this._hurtDuration = 0.5; // default if clip has no duration
+        this._lastBaseAction = null; // optional bookkeeping
 
         this._LoadModels();
     }
@@ -63,11 +75,22 @@ class BasicCharacterController {
             this._mixer = new THREE.AnimationMixer(this._target);
 
             this._manager = new THREE.LoadingManager();
-            this._manager.onLoad = () => { this._stateMachine.SetState('idle'); };
+            this._manager.onLoad = () => {
+                this._stateMachine.SetState('idle');
+                this._onHpChange(this._hp, this._hpMax);
+                // Cache hurt duration if we have it
+                if (this._animations.hurt?.clip?.duration) {
+                    this._hurtDuration = this._animations.hurt.clip.duration;
+                }
+            };
 
             const _OnLoad = (name, anim) => {
                 const clip = anim.animations[0];
                 const action = this._mixer.clipAction(clip);
+                if (name === 'hurt') {
+                    action.setLoop(THREE.LoopOnce, 0);
+                    action.clampWhenFinished = true;
+                }
                 this._animations[name] = { clip, action };
             };
 
@@ -76,7 +99,63 @@ class BasicCharacterController {
             loader2.load('walk.fbx', a => _OnLoad('walk', a));
             loader2.load('run.fbx', a => _OnLoad('run', a));
             loader2.load('idle.fbx', a => _OnLoad('idle', a));
+
+            // optional hurt clip
+            loader2.load('hurt.fbx', a => _OnLoad('hurt', a), undefined, () => {
+                // silently ignore if not present
+            });
         });
+    }
+
+    // HP API
+    damage(n) {
+        const amount = Math.max(0, n | 0);
+        if (amount <= 0) return;
+
+        this._hp = Math.max(0, this._hp - amount);
+        this._onHpChange(this._hp, this._hpMax);
+
+        // trigger hurt animation if available
+        this._triggerHurt();
+    }
+
+    heal(n) {
+        this._hp = Math.min(this._hpMax, this._hp + Math.max(0, n | 0));
+        this._onHpChange(this._hp, this._hpMax);
+    }
+
+    setMaxHp(n) {
+        this._hpMax = Math.max(1, n | 0);
+        this._hp = Math.min(this._hp, this._hpMax);
+        this._onHpChange(this._hp, this._hpMax);
+    }
+
+    _triggerHurt() {
+        const hurt = this._animations.hurt?.action;
+        if (!hurt || !this._mixer) return;
+
+        // mark override window
+        this._hurtActive = true;
+        this._hurtUntilMS = performance.now() + this._hurtDuration * 1000;
+
+        // restart hurt cleanly every time
+        hurt.reset();
+        hurt.enabled = true;
+        hurt.paused = false;
+        // crossfade from whatever is playing to hurt
+        try {
+            // find currently playing base action if any
+            for (const k of Object.keys(this._animations)) {
+                const a = this._animations[k].action;
+                if (!a || a === hurt) continue;
+                if (a.isRunning()) {
+                    this._lastBaseAction = a;
+                    a.crossFadeTo(hurt, 0.06, false);
+                }
+            }
+        } catch { /* safe no-op */ }
+
+        hurt.play();
     }
 
     setPosition(x, y, z) {
@@ -113,10 +192,25 @@ class BasicCharacterController {
     get Rotation() { return this._target ? this._target.quaternion : new THREE.Quaternion(); }
 
     Update(timeInSeconds) {
-        if (!this._stateMachine._currentState || !this._target) return;
+        if (!this._target) return;
 
-        this._stateMachine.Update(timeInSeconds, this._input);
+        // While hurt is active, pause FSM so the hurt clip is visible.
+        // Movement logic remains active.
+        if (!this._hurtActive) {
+            if (this._stateMachine._currentState) {
+                this._stateMachine.Update(timeInSeconds, this._input);
+            }
+        } else {
+            if (performance.now() >= this._hurtUntilMS) {
+                this._hurtActive = false;
+                // Optionally crossfade back to idle; FSM will pick the right one next frame
+                if (this._animations.idle?.action) {
+                    this._animations.idle.action.reset().fadeIn(0.06).play();
+                }
+            }
+        }
 
+        // Movement and collisions
         const v = this._velocity;
         const dec = new THREE.Vector3(v.x * this._decceleration.x, v.y * this._decceleration.y, v.z * this._decceleration.z);
         dec.multiplyScalar(timeInSeconds);
@@ -146,13 +240,10 @@ class BasicCharacterController {
 
         const next = obj.position.clone().add(forward).add(sideways);
 
-        // ground (flat)
         const groundY = this._getHeightAt(next.x, next.z);
         next.y = groundY + (obj.position.y - groundY);
 
-        // collide and commit
         let corrected = this._resolve2DCollisions(next);
-        // optional second pass for corner stability
         corrected = this._resolve2DCollisions(corrected);
 
         obj.position.copy(corrected);
