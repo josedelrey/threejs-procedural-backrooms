@@ -6,12 +6,10 @@ class BasicCharacterControllerProxy {
     constructor(animations) {
         this._animations = animations;
     }
-
     get animations() {
         return this._animations;
     }
 }
-
 
 class BasicCharacterController {
     constructor(params) {
@@ -25,10 +23,17 @@ class BasicCharacterController {
         this._velocity = new THREE.Vector3(0, 0, 0);
         this._position = new THREE.Vector3();
 
+        // NEW: initial spawn position support
+        this._startPosition =
+            params.startPosition && params.startPosition.isVector3
+                ? params.startPosition.clone()
+                : new THREE.Vector3(0, 0, 0);
+
         this._animations = {};
         this._input = new BasicCharacterControllerInput();
         this._stateMachine = new CharacterFSM(
-            new BasicCharacterControllerProxy(this._animations));
+            new BasicCharacterControllerProxy(this._animations)
+        );
 
         this._LoadModels();
     }
@@ -38,10 +43,11 @@ class BasicCharacterController {
         loader.setPath('./resources/character/');
         loader.load('character_rigged.fbx', (fbx) => {
             fbx.scale.setScalar(0.3);
-            fbx.traverse(c => {
+            fbx.traverse((c) => {
                 c.castShadow = true;
             });
-            // 1) Eliminar luces internas del FBX
+
+            // Remove any lights embedded in the FBX
             const toRemove = [];
             fbx.traverse((o) => {
                 if (o.isLight) toRemove.push(o);
@@ -50,24 +56,28 @@ class BasicCharacterController {
                 if (l.parent) l.parent.remove(l);
             }
 
-            // Make all materials matte (Phong version)
+            // Make materials matte
             fbx.traverse((o) => {
                 if (!o.isMesh) return;
                 const mats = Array.isArray(o.material) ? o.material : [o.material];
                 mats.forEach((m) => {
                     if (!m) return;
                     if (m.isMeshPhongMaterial) {
-                        m.shininess = 0;                 // no glossy highlight
-                        m.specular.set(0x000000);        // kill specular color
-                        m.reflectivity = 0;              // kills mirror-like reflections
-                        m.envMap = null;                 // ensure no environment reflections
+                        m.shininess = 0;
+                        m.specular.set(0x000000);
+                        m.reflectivity = 0;
+                        m.envMap = null;
                         m.needsUpdate = true;
                     }
                 });
             });
 
-
             this._target = fbx;
+
+            // NEW: place the character at the requested spawn
+            this._target.position.copy(this._startPosition);
+            this._position.copy(this._target.position);
+
             this._params.scene.add(this._target);
 
             this._mixer = new THREE.AnimationMixer(this._target);
@@ -80,19 +90,25 @@ class BasicCharacterController {
             const _OnLoad = (animName, anim) => {
                 const clip = anim.animations[0];
                 const action = this._mixer.clipAction(clip);
-
-                this._animations[animName] = {
-                    clip: clip,
-                    action: action,
-                };
+                this._animations[animName] = { clip, action };
             };
 
-            const loader = new FBXLoader(this._manager);
-            loader.setPath('./resources/character/');
-            loader.load('walk.fbx', (a) => { _OnLoad('walk', a); });
-            loader.load('run.fbx', (a) => { _OnLoad('run', a); });
-            loader.load('idle.fbx', (a) => { _OnLoad('idle', a); });
+            const loader2 = new FBXLoader(this._manager);
+            loader2.setPath('./resources/character/');
+            loader2.load('walk.fbx', (a) => { _OnLoad('walk', a); });
+            loader2.load('run.fbx', (a) => { _OnLoad('run', a); });
+            loader2.load('idle.fbx', (a) => { _OnLoad('idle', a); });
         });
+    }
+
+    // Optional helper: allow teleporting even before the model loaded
+    setPosition(x, y, z) {
+        if (!this._target) {
+            this._startPosition.set(x, y, z);
+        } else {
+            this._target.position.set(x, y, z);
+            this._position.set(x, y, z);
+        }
     }
 
     get Position() {
@@ -107,7 +123,7 @@ class BasicCharacterController {
     }
 
     Update(timeInSeconds) {
-        if (!this._stateMachine._currentState) {
+        if (!this._stateMachine._currentState || !this._target) {
             return;
         }
 
@@ -120,8 +136,9 @@ class BasicCharacterController {
             velocity.z * this._decceleration.z
         );
         frameDecceleration.multiplyScalar(timeInSeconds);
-        frameDecceleration.z = Math.sign(frameDecceleration.z) * Math.min(
-            Math.abs(frameDecceleration.z), Math.abs(velocity.z));
+        frameDecceleration.z =
+            Math.sign(frameDecceleration.z) *
+            Math.min(Math.abs(frameDecceleration.z), Math.abs(velocity.z));
 
         velocity.add(frameDecceleration);
 
@@ -132,7 +149,7 @@ class BasicCharacterController {
 
         const acc = this._acceleration.clone();
         if (this._input._keys.shift) {
-            acc.multiplyScalar(4.0);
+            acc.multiplyScalar(8.0);
         }
 
         if (this._input._keys.forward) {
@@ -153,9 +170,6 @@ class BasicCharacterController {
         }
 
         controlObject.quaternion.copy(_R);
-
-        const oldPosition = new THREE.Vector3();
-        oldPosition.copy(controlObject.position);
 
         const forward = new THREE.Vector3(0, 0, 1);
         forward.applyQuaternion(controlObject.quaternion);
@@ -178,7 +192,6 @@ class BasicCharacterController {
         }
     }
 }
-
 
 class BasicCharacterControllerInput {
     constructor() {
@@ -244,6 +257,5 @@ class BasicCharacterControllerInput {
         }
     }
 }
-
 
 export { BasicCharacterController, BasicCharacterControllerProxy, BasicCharacterControllerInput };

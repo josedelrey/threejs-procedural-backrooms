@@ -28,31 +28,10 @@ class ThirdPersonCameraDemo {
         const fov = 60;
         const aspect = 1920 / 1080;
         const near = 1.0;
-        const far = 1000.0;
+        const far = 2000.0;
         this._camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-        this._camera.position.set(25, 10, 25);
 
         this._scene = new THREE.Scene();
-
-        // let light = new THREE.DirectionalLight(0xFFFFFF, 1.0);
-        // light.position.set(-100, 100, -50);
-        // light.target.position.set(0, 0, 0);
-        // light.castShadow = true;
-        // light.shadow.bias = -0.001;
-        // light.shadow.mapSize.width = 4096;
-        // light.shadow.mapSize.height = 4096;
-        // light.shadow.camera.near = 0.1;
-        // light.shadow.camera.far = 500.0;
-        // light.shadow.camera.near = 0.5;
-        // light.shadow.camera.far = 500.0;
-        // light.shadow.camera.left = 50;
-        // light.shadow.camera.right = -50;
-        // light.shadow.camera.top = 50;
-        // light.shadow.camera.bottom = -50;
-        // this._scene.add(light);
-
-        // let light = new THREE.AmbientLight(0xFFFFFF, 0.25);
-        // this._scene.add(light);
 
         const loader = new THREE.CubeTextureLoader();
         const texture = new THREE.CubeTextureLoader().load([
@@ -69,6 +48,13 @@ class ThirdPersonCameraDemo {
         // Initialize terrain
         this._terrain = new Terrain(this._scene);
 
+        // Save spawn
+        this._spawn = this._terrain.getFirstRoomCenter();
+
+        // Optional: set the camera near spawn for the first frame
+        this._camera.position.set(this._spawn.x, this._spawn.y + 20, this._spawn.z + 50);
+        this._camera.lookAt(this._spawn);
+
         this._mixers = [];
         this._previousRAF = null;
 
@@ -80,6 +66,7 @@ class ThirdPersonCameraDemo {
         const params = {
             camera: this._camera,
             scene: this._scene,
+            startPosition: this._spawn.clone(),
         }
         this._controls = new BasicCharacterController(params);
 
