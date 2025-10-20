@@ -1,7 +1,9 @@
+// Main file
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.118/build/three.module.js';
 import { BasicCharacterController } from './CharacterController.js';
 import { ThirdPersonCamera } from './Camera.js';
 import { Terrain } from './Terrain.js';
+import { EnemyController } from './EnemyController.js';
 
 class ThirdPersonCameraDemo {
     constructor() { this._Initialize(); }
@@ -21,7 +23,7 @@ class ThirdPersonCameraDemo {
         this._camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
         this._scene = new THREE.Scene();
 
-        const texture = new THREE.CubeTextureLoader().load([
+        const sky = new THREE.CubeTextureLoader().load([
             './resources/sky/vz_sinister_right.png',
             './resources/sky/vz_sinister_left.png',
             './resources/sky/vz_sinister_up.png',
@@ -29,23 +31,27 @@ class ThirdPersonCameraDemo {
             './resources/sky/vz_sinister_front.png',
             './resources/sky/vz_sinister_back.png',
         ]);
-        texture.encoding = THREE.sRGBEncoding;
-        this._scene.background = texture;
+        sky.encoding = THREE.sRGBEncoding;
+        this._scene.background = sky;
 
+        // terrain + spawn
         this._terrain = new Terrain(this._scene);
         this._spawn = this._terrain.getFirstRoomCenter();
 
+        // camera start
         this._camera.position.set(this._spawn.x, this._spawn.y + 20, this._spawn.z + 50);
         this._camera.lookAt(this._spawn);
 
         this._mixers = [];
         this._previousRAF = null;
 
-        this._LoadAnimatedModel();
+        this._LoadPlayer();
+        this._SpawnEnemy();   // <— here
+
         this._RAF();
     }
 
-    _LoadAnimatedModel() {
+    _LoadPlayer() {
         const params = {
             camera: this._camera,
             scene: this._scene,
@@ -60,6 +66,30 @@ class ThirdPersonCameraDemo {
             target: this._controls,
         });
     }
+
+    _SpawnEnemy() {
+        const enemyPos = this._terrain.getRoomCenterAtSteps(3); // exactly 3 rooms away
+        enemyPos.y = 0;
+
+        this._enemy = new EnemyController({
+            scene: this._scene,
+            startPosition: enemyPos,
+            colliders: this._terrain.getColliders(),
+            radius: 8,
+            targetRadius: 5,        // match your player collider
+            aggroRange: 450,
+            attackMargin: 1.0,
+            getTargetPosition: () => this._controls?._target?.position.clone() ?? this._camera.position.clone(),
+            fbxPath: './resources/enemy/',
+            modelFile: 'enemy.fbx',
+            idleFile: 'idle.fbx',
+            walkFile: 'walk.fbx',
+            runFile: 'run.fbx',     // optional
+            attackFile: 'attack.fbx', // optional
+            scale: 0.13
+        });
+    }
+
 
     _OnWindowResize() {
         this._camera.aspect = window.innerWidth / window.innerHeight;
@@ -79,19 +109,17 @@ class ThirdPersonCameraDemo {
 
     _Step(timeElapsed) {
         const dt = timeElapsed * 0.001;
+
         if (this._mixers) this._mixers.forEach(m => m.update(dt));
         if (this._controls) this._controls.Update(dt);
         if (this._terrain) this._terrain.Update(dt);
+
+        // enemy tick
+        if (this._enemy) this._enemy.Update(dt);
+
         this._thirdPersonCamera.Update(dt);
     }
 }
 
 let _APP = null;
 window.addEventListener('DOMContentLoaded', () => { _APP = new ThirdPersonCameraDemo(); });
-
-// test code preserved...
-function _LerpOverFrames(frames, t) { const s = new THREE.Vector3(0, 0, 0); const e = new THREE.Vector3(100, 0, 0); const c = s.clone(); for (let i = 0; i < frames; i++) { c.lerp(e, t); } return c; }
-function _TestLerp(t1, t2) { const v1 = _LerpOverFrames(100, t1); const v2 = _LerpOverFrames(50, t2); console.log(v1.x + ' | ' + v2.x); }
-_TestLerp(0.01, 0.01);
-_TestLerp(1.0 / 100.0, 1.0 / 50.0);
-_TestLerp(1.0 - Math.pow(0.3, 1.0 / 100.0), 1.0 - Math.pow(0.3, 1.0 / 50.0));

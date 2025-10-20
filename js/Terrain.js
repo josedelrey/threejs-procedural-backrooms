@@ -15,6 +15,11 @@ class Terrain {
         this._rooms = [];       // [{i,j,cx,cz}]
         this._colliders = [];   // [{minX,maxX,minZ,maxZ}]
 
+        // new for enemy placement
+        this._roomIndexByKey = new Map();
+        this._graph = new Map();
+        this._spawnIndex = 0;
+
         this._Init();
     }
 
@@ -96,7 +101,7 @@ class Terrain {
             this._colliders.push({ minX, maxX, minZ, maxZ });
         };
 
-        // Wall helper with explicit X (width) and Z (depth) sizes
+        // Wall helper with explicit X and Z sizes
         const createWallXZ = (sizeX, height, sizeZ, mat, center, registerCollider = true) => {
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), mat);
             mesh.position.copy(center);
@@ -131,7 +136,7 @@ class Terrain {
                 parent.add(left); freeze(left);
                 parent.add(right); freeze(right);
 
-                // lintel (no collider)
+                // lintel with no collider
                 const lintelH = ROOM_HEIGHT - DOOR_HEIGHT;
                 const lintelC = new THREE.Vector3(roomCenterXZ.x, DOOR_HEIGHT + lintelH / 2, roomCenterXZ.z);
                 const lintel = createWallXZ(DOOR_WIDTH, lintelH, segThickness, mat, lintelC, false);
@@ -156,7 +161,7 @@ class Terrain {
             }
         };
 
-        // ---------- Maze generation ----------
+        // Maze generation
         const targetRooms = this._nRooms;
         let rows = Math.floor(Math.sqrt(targetRooms));
         if (rows < 1) rows = 1;
@@ -217,7 +222,7 @@ class Terrain {
             c.cz = (c.j - midJ) * ROOM_SIZE;
         }
 
-        // spawn + rooms
+        // spawn and rooms
         this._rooms = builtCells.map(r => ({ i: r.i, j: r.j, cx: r.cx, cz: r.cz }));
         this.spawn = this._rooms.length ? new THREE.Vector3(this._rooms[0].cx, 0, this._rooms[0].cz)
             : new THREE.Vector3(0, 0, 0);
@@ -286,7 +291,7 @@ class Terrain {
         for (const c of builtCells) {
             const o = openings.get(key(c.i, c.j));
 
-            // North edge — spans along X at z + half
+            // North edge
             {
                 const wallZ = c.cz + ROOM_SIZE / 2;
                 if (o.N) {
@@ -298,7 +303,7 @@ class Terrain {
                 }
             }
 
-            // West edge — spans along Z at x - half
+            // West edge
             {
                 const wallX = c.cx - ROOM_SIZE / 2;
                 const open = hasNeighbor(c.i - 1, c.j) ? o.W : false;
@@ -328,6 +333,25 @@ class Terrain {
             }
         }
 
+        // build room index map and graph for BFS
+        this._roomIndexByKey.clear();
+        for (let idxR = 0; idxR < this._rooms.length; idxR++) {
+            const r = this._rooms[idxR];
+            this._roomIndexByKey.set(`${r.i},${r.j}`, idxR);
+        }
+        this._graph.clear();
+        for (let idxR = 0; idxR < this._rooms.length; idxR++) {
+            const r = this._rooms[idxR];
+            const o = openings.get(`${r.i},${r.j}`);
+            const neighbors = [];
+            if (o.N) { const k = `${r.i},${r.j + 1}`; if (this._roomIndexByKey.has(k)) neighbors.push(this._roomIndexByKey.get(k)); }
+            if (o.S) { const k = `${r.i},${r.j - 1}`; if (this._roomIndexByKey.has(k)) neighbors.push(this._roomIndexByKey.get(k)); }
+            if (o.E) { const k = `${r.i + 1},${r.j}`; if (this._roomIndexByKey.has(k)) neighbors.push(this._roomIndexByKey.get(k)); }
+            if (o.W) { const k = `${r.i - 1},${r.j}`; if (this._roomIndexByKey.has(k)) neighbors.push(this._roomIndexByKey.get(k)); }
+            this._graph.set(idxR, neighbors);
+        }
+        this._spawnIndex = this._roomIndexByKey.get(`${this._rooms[0].i},${this._rooms[0].j}`) ?? 0;
+
         this._group = group;
         this._scene.add(this._group);
     }
@@ -336,6 +360,73 @@ class Terrain {
     getFirstRoomCenter() { return this.spawn ? this.spawn.clone() : new THREE.Vector3(0, 0, 0); }
     getRoomCenters() { return this._rooms.map(r => ({ cx: r.cx, cz: r.cz })); }
     getColliders() { return this._colliders; }
+
+    // BFS from a room index to compute maze distances
+    _bfsDistancesFrom(startIndex) {
+        const dist = new Array(this._rooms.length).fill(Infinity);
+        const q = [];
+        dist[startIndex] = 0;
+        q.push(startIndex);
+        while (q.length) {
+            const u = q.shift();
+            const nd = dist[u] + 1;
+            const nbrs = this._graph.get(u) || [];
+            for (const v of nbrs) {
+                if (dist[v] === Infinity) {
+                    dist[v] = nd;
+                    q.push(v);
+                }
+            }
+        }
+        return dist;
+    }
+
+    getRoomCenterAtSteps(steps = 3) {
+        if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
+
+        const dist = this._bfsDistancesFrom(this._spawnIndex ?? 0);
+
+        const exact = [];
+        const greater = [];
+        let farthestIdx = 0;
+        let farthestDist = -1;
+
+        for (let i = 0; i < dist.length; i++) {
+            const d = dist[i];
+            if (d === steps) exact.push(i);
+            else if (d > steps) greater.push(i);
+            if (d > farthestDist) { farthestDist = d; farthestIdx = i; }
+        }
+
+        let pickIndex = null;
+        if (exact.length) {
+            pickIndex = exact[(Math.random() * exact.length) | 0];
+        } else if (greater.length) {
+            pickIndex = greater[(Math.random() * greater.length) | 0];
+        } else {
+            pickIndex = farthestIdx;
+        }
+
+        const r = this._rooms[pickIndex];
+        return new THREE.Vector3(r.cx, 0, r.cz);
+    }
+
+    // Returns a random room center at least minSteps from the spawn
+    getRandomFarRoomCenter(minSteps = 3) {
+        if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
+        const dist = this._bfsDistancesFrom(this._spawnIndex ?? 0);
+
+        const cand = [];
+        let farthestIdx = 0;
+        let farthestDist = -1;
+        for (let i = 0; i < dist.length; i++) {
+            if (dist[i] >= minSteps) cand.push(i);
+            if (dist[i] > farthestDist) { farthestDist = dist[i]; farthestIdx = i; }
+        }
+        const pickIndex = cand.length ? cand[(Math.random() * cand.length) | 0] : farthestIdx;
+        const r = this._rooms[pickIndex];
+        return new THREE.Vector3(r.cx, 0, r.cz);
+    }
 
     Update(t) {
         if (this._ceilLightMat) {
