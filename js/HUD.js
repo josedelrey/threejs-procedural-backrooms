@@ -14,7 +14,7 @@ export class HUD {
 
         const css = document.createElement('style');
         css.textContent = `
-      /* ======== Silent Hill PS1-style HUD ======== */
+      /* Minimal PS1 style HUD */
       #hud {
         position: fixed;
         top: 22px;
@@ -63,7 +63,7 @@ export class HUD {
         opacity: 0.9;
       }
 
-      /* subtle breathing flicker to feel CRT-ish */
+      /* Subtle flicker */
       @keyframes pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.92; }
@@ -72,7 +72,7 @@ export class HUD {
     `;
         document.head.appendChild(css);
 
-        // pixel font (optional)
+        // Pixel font
         const font = document.createElement('link');
         font.rel = 'stylesheet';
         font.href = 'https://fonts.googleapis.com/css2?family=VT323&display=swap';

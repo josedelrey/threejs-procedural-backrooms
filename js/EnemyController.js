@@ -6,63 +6,63 @@ class EnemyController {
     constructor(params) {
         this._params = params;
 
-        // movement and collision
+        // Movement and collision
         this._turnSpeed = Math.PI * 1.75;
         this._radius = typeof params.radius === 'number' ? params.radius : 8;
         this._targetRadius = typeof params.targetRadius === 'number' ? params.targetRadius : 6;
         this._colliders = Array.isArray(params.colliders) ? params.colliders : [];
 
-        // speeds
+        // Speeds
         this._speedWalk = typeof params.speedWalk === 'number' ? params.speedWalk : 22;
         this._speedRun = typeof params.speedRun === 'number' ? params.speedRun : 40;
 
-        // behavior ranges
+        // Behavior ranges
         this._aggroRange = typeof params.aggroRange === 'number' ? params.aggroRange : 450;
         this._deaggroRange = this._aggroRange * 1.25;
         this._attackMargin = typeof params.attackMargin === 'number' ? params.attackMargin : 1.0;
         this._attackHysteresis = typeof params.attackHysteresis === 'number' ? params.attackHysteresis : 20;
 
-        // timing to avoid thrash
+        // Timing (anti thrash)
         this._attackCooldown = typeof params.attackCooldown === 'number' ? params.attackCooldown : 0.8;
         this._minAttackHold = typeof params.minAttackHold === 'number' ? params.minAttackHold : 0.25;
         this._minChaseHold = typeof params.minChaseHold === 'number' ? params.minChaseHold : 0.2;
 
-        // hit to player
+        // Player hit callback
         this.onHitPlayer = typeof params.onHitPlayer === 'function' ? params.onHitPlayer : null;
         this._attackDamage = typeof params.attackDamage === 'number' ? params.attackDamage : 10;
 
-        // movement mode
+        // Movement mode
         this._useKinematic = true;
 
-        // inertial fields
+        // Kinematic params
         this._accel = 30;
         this._maxSpeed = this._speedRun;
         this._velocity = new THREE.Vector3();
 
-        // state
+        // State
         this._state = 'idle';
         this._stateHold = 0;
         this._time = 0;
 
-        // attack bookkeeping
+        // Attack timers
         this._attackPlaying = false;
         this._attackStartTime = -Infinity;
-        this._attackDuration = 0.6;  // replaced by clip duration if available
+        this._attackDuration = 0.6;  // overridden by clip duration if present
         this._lastAttackEnd = -Infinity;
 
-        // hp and damage handling
+        // Health
         this._hpMax = typeof params.hpMax === 'number' ? params.hpMax : 60;
         this._hp = this._hpMax;
 
-        // hurt handling
+        // Hurt / invulnerability
         this._hurtActive = false;
         this._hurtEndTime = -Infinity;
         this._hurtDuration = typeof params.hurtDuration === 'number' ? params.hurtDuration : 0.5;
-        this._invulnDuration = typeof params.invulnDuration === 'number' ? params.invulnDuration : 0.0; // seconds
+        this._invulnDuration = typeof params.invulnDuration === 'number' ? params.invulnDuration : 0.0;
         this._invulnEndTime = -Infinity;
-        this._hurtKnockback = typeof params.hurtKnockback === 'number' ? params.hurtKnockback : 0.0;    // world units
+        this._hurtKnockback = typeof params.hurtKnockback === 'number' ? params.hurtKnockback : 0.0;
 
-        // start and target
+        // Start and target
         this._startPosition =
             params.startPosition && params.startPosition.isVector3
                 ? params.startPosition.clone()
@@ -72,12 +72,12 @@ class EnemyController {
             ? params.getTargetPosition
             : () => new THREE.Vector3();
 
-        // animation
+        // Animation
         this._mixer = null;
         this._anims = {};
         this._currentAction = null;
 
-        // three object
+        // Three.js object
         this._obj = null;
 
         this._load();
@@ -85,26 +85,25 @@ class EnemyController {
 
     get object3D() { return this._obj; }
 
-    // public HP API
+    // HP API
     damage(n, hitDir = null) {
         const now = this._time;
-        if (now < this._invulnEndTime) return; // invulnerable window
+        if (now < this._invulnEndTime) return; // invulnerability window
 
         const amount = Math.max(0, n | 0);
         if (amount <= 0) return;
 
         this._hp = Math.max(0, this._hp - amount);
 
-        // cancel any current attack and start cooldown
+        // Cancel attack and start cooldown
         this._attackPlaying = false;
         this._lastAttackEnd = this._time;
 
-        // play hurt animation if available and set timers
+        // Trigger hurt
         this._triggerHurt();
 
-        // simple knockback if requested
+        // Knockback
         if (this._hurtKnockback > 0 && this._obj) {
-            // knock back away from hitDir or away from player if no dir provided
             let dir = new THREE.Vector3();
             if (hitDir && hitDir.isVector3) {
                 dir.copy(hitDir).normalize();
@@ -115,7 +114,6 @@ class EnemyController {
             }
             if (dir.lengthSq() > 0) {
                 const next = this._obj.position.clone().addScaledVector(dir, this._hurtKnockback);
-                // resolve collisions and commit
                 const resolved = this._resolveAABBCollisions(next);
                 this._obj.position.copy(resolved);
             }
@@ -205,12 +203,12 @@ class EnemyController {
             animLoader.load(walkFile, (a) => onAnim('walk', a));
             if (runFile) animLoader.load(runFile, (a) => onAnim('run', a));
             if (attackFile) animLoader.load(attackFile, (a) => onAnim('attack', a));
-            // load hurt but ignore failure
+            // Load hurt; ignore failure
             animLoader.load(hurtFile, (a) => onAnim('hurt', a), undefined, () => { });
         });
     }
 
-    // allow forced restart of same action
+    // Allow forced restart of same action
     _play(name, fade = 0.12, force = false) {
         if (!this._mixer || !this._anims[name]) return;
         const next = this._anims[name].action;
@@ -233,19 +231,19 @@ class EnemyController {
     _triggerHurt() {
         const a = this._anims.hurt?.action;
         if (!a) {
-            // no hurt clip, still gate behavior for a short moment
+            // No clip; still gate behavior briefly
             this._hurtActive = true;
             this._hurtEndTime = this._time + this._hurtDuration;
             this._invulnEndTime = this._time + this._invulnDuration;
             return;
         }
 
-        // set timers
+        // Timers
         this._hurtActive = true;
         this._hurtEndTime = this._time + this._hurtDuration;
         this._invulnEndTime = this._time + this._invulnDuration;
 
-        // crossfade from current to hurt and force restart
+        // Crossfade to hurt and restart
         try {
             if (this._currentAction && this._currentAction !== a) {
                 this._currentAction.crossFadeTo(a, 0.06, false);
@@ -310,13 +308,13 @@ class EnemyController {
         this._stateHold = this._minAttackHold;
         this._attackPlaying = true;
         this._attackStartTime = this._time;
-        // force so the same clip can replay
+        // Force restart so the same clip can replay
         this._play('attack', 0.06, true);
         if (this.onHitPlayer) this.onHitPlayer(this._attackDamage);
     }
 
     _maybeChangeState(dist, canAttack) {
-        // do not change state while hurt
+        // No state changes while hurt
         if (this._hurtActive) return;
 
         if (this._stateHold > 0) return;
@@ -372,10 +370,10 @@ class EnemyController {
         this._time += dt;
         if (this._stateHold > 0) this._stateHold -= dt;
 
-        // update hurt timers
+        // Hurt timers
         if (this._hurtActive && this._time >= this._hurtEndTime) {
             this._hurtActive = false;
-            // after hurt ends, fade to idle so we have a stable base
+            // After hurt, fade to idle for a stable base
             if (this._anims.idle?.action) this._play('idle', 0.06, true);
         }
 
@@ -399,10 +397,10 @@ class EnemyController {
 
         this._maybeChangeState(dist, canAttack);
 
-        // movement
+        // Movement
         let moveSpeed = 0;
         if (this._hurtActive) {
-            moveSpeed = 0; // stagger during hurt
+            moveSpeed = 0;
         } else if (this._state === 'chase') {
             moveSpeed = this._anims.run ? this._speedRun : this._speedWalk;
         } else if (this._state === 'attack') {
@@ -441,7 +439,7 @@ class EnemyController {
             this._obj.position.copy(next);
         }
 
-        // choose animation
+        // Animation choice
         if (this._hurtActive) {
             if (this._anims.hurt && this._currentAction !== this._anims.hurt.action) {
                 this._play('hurt', 0.06, true);

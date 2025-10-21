@@ -27,7 +27,10 @@ class BasicCharacterController {
         this._colliders = Array.isArray(params.colliders) ? params.colliders : [];
         this._getHeightAt = typeof params.getHeightAt === 'function' ? params.getHeightAt : (() => 0);
 
-        // HP
+        // Run multiplier (default 8)
+        this._runMultiplier = typeof params.runMultiplier === 'number' ? params.runMultiplier : 8.0;
+
+        // Health
         this._hpMax = 100;
         this._hp = 100;
         this._onHpChange = typeof params.onHpChange === 'function' ? params.onHpChange : (() => { });
@@ -37,11 +40,11 @@ class BasicCharacterController {
         this._input = new BasicCharacterControllerInput();
         this._stateMachine = new CharacterFSM(new BasicCharacterControllerProxy(this._animations));
 
-        // Hurt override control
+        // Hurt override
         this._hurtActive = false;
         this._hurtUntilMS = 0;
-        this._hurtDuration = 0.5; // default if clip has no duration
-        this._lastBaseAction = null; // optional bookkeeping
+        this._hurtDuration = 0.5;
+        this._lastBaseAction = null;
 
         this._LoadModels();
     }
@@ -78,7 +81,6 @@ class BasicCharacterController {
             this._manager.onLoad = () => {
                 this._stateMachine.SetState('idle');
                 this._onHpChange(this._hp, this._hpMax);
-                // Cache hurt duration if we have it
                 if (this._animations.hurt?.clip?.duration) {
                     this._hurtDuration = this._animations.hurt.clip.duration;
                 }
@@ -99,23 +101,16 @@ class BasicCharacterController {
             loader2.load('walk.fbx', a => _OnLoad('walk', a));
             loader2.load('run.fbx', a => _OnLoad('run', a));
             loader2.load('idle.fbx', a => _OnLoad('idle', a));
-
-            // optional hurt clip
-            loader2.load('hurt.fbx', a => _OnLoad('hurt', a), undefined, () => {
-                // silently ignore if not present
-            });
+            loader2.load('hurt.fbx', a => _OnLoad('hurt', a), undefined, () => { });
         });
     }
 
-    // HP API
     damage(n) {
         const amount = Math.max(0, n | 0);
         if (amount <= 0) return;
 
         this._hp = Math.max(0, this._hp - amount);
         this._onHpChange(this._hp, this._hpMax);
-
-        // trigger hurt animation if available
         this._triggerHurt();
     }
 
@@ -134,17 +129,13 @@ class BasicCharacterController {
         const hurt = this._animations.hurt?.action;
         if (!hurt || !this._mixer) return;
 
-        // mark override window
         this._hurtActive = true;
         this._hurtUntilMS = performance.now() + this._hurtDuration * 1000;
 
-        // restart hurt cleanly every time
         hurt.reset();
         hurt.enabled = true;
         hurt.paused = false;
-        // crossfade from whatever is playing to hurt
         try {
-            // find currently playing base action if any
             for (const k of Object.keys(this._animations)) {
                 const a = this._animations[k].action;
                 if (!a || a === hurt) continue;
@@ -153,7 +144,7 @@ class BasicCharacterController {
                     a.crossFadeTo(hurt, 0.06, false);
                 }
             }
-        } catch { /* safe no-op */ }
+        } catch { }
 
         hurt.play();
     }
@@ -194,8 +185,6 @@ class BasicCharacterController {
     Update(timeInSeconds) {
         if (!this._target) return;
 
-        // While hurt is active, pause FSM so the hurt clip is visible.
-        // Movement logic remains active.
         if (!this._hurtActive) {
             if (this._stateMachine._currentState) {
                 this._stateMachine.Update(timeInSeconds, this._input);
@@ -203,14 +192,12 @@ class BasicCharacterController {
         } else {
             if (performance.now() >= this._hurtUntilMS) {
                 this._hurtActive = false;
-                // Optionally crossfade back to idle; FSM will pick the right one next frame
                 if (this._animations.idle?.action) {
                     this._animations.idle.action.reset().fadeIn(0.06).play();
                 }
             }
         }
 
-        // Movement and collisions
         const v = this._velocity;
         const dec = new THREE.Vector3(v.x * this._decceleration.x, v.y * this._decceleration.y, v.z * this._decceleration.z);
         dec.multiplyScalar(timeInSeconds);
@@ -223,7 +210,7 @@ class BasicCharacterController {
         const _R = obj.quaternion.clone();
 
         const acc = this._acceleration.clone();
-        if (this._input._keys.shift) acc.multiplyScalar(8.0);
+        if (this._input._keys.shift) acc.multiplyScalar(this._runMultiplier);
 
         if (this._input._keys.forward) v.z += acc.z * timeInSeconds;
         if (this._input._keys.backward) v.z -= acc.z * timeInSeconds;

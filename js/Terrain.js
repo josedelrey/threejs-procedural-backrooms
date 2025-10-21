@@ -1,8 +1,6 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.118/build/three.module.js';
 
-/**
- * BackroomsMaze - perfect maze carved with randomized DFS.
- */
+/** Terrain: DFS-carved maze and portal utilities */
 class Terrain {
     constructor(scene, params = {}) {
         this._scene = scene;
@@ -12,15 +10,15 @@ class Terrain {
         this._ceilLightMat = null;
 
         this.spawn = null;      // THREE.Vector3
-        this._rooms = [];       // [{i,j,cx,cz}]
-        this._colliders = [];   // [{minX,maxX,minZ,maxZ}]
+        this._rooms = [];       // {i,j,cx,cz}
+        this._colliders = [];   // {minX,maxX,minZ,maxZ}
 
-        // room graph
+        // Room graph
         this._roomIndexByKey = new Map();
         this._graph = new Map();
         this._spawnIndex = 0;
 
-        // portal state
+        // Portal
         this._portal = null;
         this._portalLight = null;
         this._portalMat = null;
@@ -47,7 +45,7 @@ class Terrain {
             t.magFilter = THREE.LinearFilter;
         }
 
-        // Repeats
+        // UV repeats
         const BASE_REPEAT = 20;
         const WALL_REPEAT = 4;
         const TILE_REPEAT = 12;
@@ -97,17 +95,17 @@ class Terrain {
 
         const pillarMat = new THREE.MeshLambertMaterial({ map: wallColor });
 
-        // Shared geos
+        // Shared geometries
         const GEO_FLOOR = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_CEILING = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_LIGHT = new THREE.PlaneGeometry(CENTER_LIGHT_SIZE, CENTER_LIGHT_SIZE);
 
-        // Collider utils
+        // Colliders
         const addRectCollider = (minX, maxX, minZ, maxZ) => {
             this._colliders.push({ minX, maxX, minZ, maxZ });
         };
 
-        // Wall helper with explicit X and Z sizes
+        // Wall helper
         const createWallXZ = (sizeX, height, sizeZ, mat, center, registerCollider = true) => {
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), mat);
             mesh.position.copy(center);
@@ -123,7 +121,7 @@ class Terrain {
             mesh.updateMatrix();
         };
 
-        // Door builder
+        // Walls with doorway
         const addWallWithDoor = (parent, isHorizontal, roomCenterXZ, mat) => {
             const half = ROOM_SIZE / 2;
             const yCenter = ROOM_HEIGHT / 2;
@@ -164,7 +162,7 @@ class Terrain {
             }
         };
 
-        // Maze generation
+        // Maze generation (randomized DFS)
         const targetRooms = this._nRooms;
         let rows = Math.floor(Math.sqrt(targetRooms));
         if (rows < 1) rows = 1;
@@ -216,7 +214,7 @@ class Terrain {
 
         const builtCells = visitOrder.slice(0, targetRooms);
 
-        // center cluster
+        // Center the cluster
         let minI = Infinity, maxI = -Infinity, minJ = Infinity, maxJ = -Infinity;
         for (const c of builtCells) { if (c.i < minI) minI = c.i; if (c.i > maxI) maxI = c.i; if (c.j < minJ) minJ = c.j; if (c.j > maxJ) maxJ = c.j; }
         const midI = (minI + maxI) / 2, midJ = (minJ + maxJ) / 2;
@@ -225,12 +223,12 @@ class Terrain {
             c.cz = (c.j - midJ) * ROOM_SIZE;
         }
 
-        // spawn and rooms
+        // Spawn and room list
         this._rooms = builtCells.map(r => ({ i: r.i, j: r.j, cx: r.cx, cz: r.cz }));
         this.spawn = this._rooms.length ? new THREE.Vector3(this._rooms[0].cx, 0, this._rooms[0].cz)
             : new THREE.Vector3(0, 0, 0);
 
-        // shells
+        // Room shells
         const buildRoomShell = (parent, cx, cz) => {
             const floor = new THREE.Mesh(GEO_FLOOR, floorMat);
             floor.rotation.x = -Math.PI / 2;
@@ -264,7 +262,7 @@ class Terrain {
 
         for (const c of builtCells) buildRoomShell(group, c.cx, c.cz);
 
-        // pillars + colliders
+        // Pillars and colliders
         const pillarGeo = new THREE.BoxGeometry(PILLAR_SIZE, ROOM_HEIGHT, PILLAR_SIZE);
         const pillarsPerRoom = 4;
         const instancedPillars = new THREE.InstancedMesh(pillarGeo, pillarMat, builtCells.length * pillarsPerRoom);
@@ -289,11 +287,11 @@ class Terrain {
 
         const hasNeighbor = (i, j) => builtSet.has(key(i, j));
 
-        // walls with door openings
+        // Walls with doors
         for (const c of builtCells) {
             const o = openings.get(key(c.i, c.j));
 
-            // North edge
+            // North
             {
                 const wallZ = c.cz + ROOM_SIZE / 2;
                 if (o.N) {
@@ -305,7 +303,7 @@ class Terrain {
                 }
             }
 
-            // West edge
+            // West
             {
                 const wallX = c.cx - ROOM_SIZE / 2;
                 const open = hasNeighbor(c.i - 1, c.j) ? o.W : false;
@@ -319,7 +317,7 @@ class Terrain {
             }
         }
 
-        // close outer South and East boundaries
+        // Close south and east boundaries
         for (const c of builtCells) {
             if (!hasNeighbor(c.i, c.j - 1)) {
                 const wallZ = c.cz - ROOM_SIZE / 2;
@@ -335,7 +333,7 @@ class Terrain {
             }
         }
 
-        // build room index map and graph for BFS
+        // Build index map and graph
         this._roomIndexByKey.clear();
         for (let idxR = 0; idxR < this._rooms.length; idxR++) {
             const r = this._rooms[idxR];
@@ -363,7 +361,7 @@ class Terrain {
     getRoomCenters() { return this._rooms.map(r => ({ cx: r.cx, cz: r.cz })); }
     getColliders() { return this._colliders; }
 
-    // BFS from a room index to compute maze distances
+    // BFS distances from a room index
     _bfsDistancesFrom(startIndex) {
         const dist = new Array(this._rooms.length).fill(Infinity);
         const q = [];
@@ -383,7 +381,7 @@ class Terrain {
         return dist;
     }
 
-    // nearest room index to world position
+    // Nearest room index to world position
     _nearestRoomIndexTo(x, z) {
         if (!this._rooms.length) return 0;
         let best = 0;
@@ -397,7 +395,7 @@ class Terrain {
         return best;
     }
 
-    // furthest room center from a given world position
+    // Furthest room center from a world position
     getFurthestRoomCenterFromPosition(pos) {
         if (!pos || !pos.isVector3 || !this._rooms.length) return this.getFirstRoomCenter();
         const startIdx = this._nearestRoomIndexTo(pos.x, pos.z);
@@ -411,7 +409,7 @@ class Terrain {
         return new THREE.Vector3(r.cx, 0, r.cz);
     }
 
-    // spawn a spiral-shader portal at the furthest room from given position
+    // Spawn a spiral-shader portal at the furthest room
     // opts: { radius, tube, color1, color2, speed, turns, thickness, y }
     spawnPortalAtFurthest(fromWorldPos, opts = {}) {
         const radius = opts.radius ?? 28;
@@ -423,7 +421,7 @@ class Terrain {
         const turns = opts.turns ?? 8.0;
         const thickness = opts.thickness ?? 0.35;
 
-        // remove old portal if any
+        // Remove existing portal
         if (this._portal) {
             this._group.remove(this._portal);
             this._portal.geometry?.dispose?.();
@@ -440,10 +438,10 @@ class Terrain {
 
         const target = this.getFurthestRoomCenterFromPosition(fromWorldPos);
 
-        // geometry
+        // Geometry
         const geo = new THREE.TorusGeometry(radius, tube, 16, 48);
 
-        // spiral shader
+        // Shader
         const mat = new THREE.ShaderMaterial({
             uniforms: {
                 uTime: { value: 0 },
@@ -475,11 +473,11 @@ class Terrain {
           float r = length(p) + 1e-4;
           float a = atan(p.y, p.x);
 
-          // spiral bands
+          // Spiral bands
           float s = sin(uTurns * a + 6.0 * log(r) - uSpeed * uTime);
           float band = smoothstep(uThickness, uThickness - 0.15, abs(s));
 
-          // fade near outer edge
+          // Edge fade
           float edge = 1.0 - smoothstep(0.46, 0.5, r);
 
           vec3 col = mix(uColor1, uColor2, band);
@@ -510,7 +508,7 @@ class Terrain {
         return ring;
     }
 
-    // exact N-steps room center if possible
+    // Room at exactly N steps or fallback
     getRoomCenterAtSteps(steps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
 
@@ -541,7 +539,7 @@ class Terrain {
         return new THREE.Vector3(r.cx, 0, r.cz);
     }
 
-    // random room center at least minSteps from the spawn
+    // Random room at least minSteps from spawn
     getRandomFarRoomCenter(minSteps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
         const dist = this._bfsDistancesFrom(this._spawnIndex ?? 0);
@@ -567,10 +565,10 @@ class Terrain {
             this._sun.intensity = 0.33 + 0.02 * Math.sin(t * 0.35);
         }
 
-        // animate portal
+        // Portal animation
         if (this._portal) {
-            this._portalTime += t;                   // accumulate seconds
-            this._portal.rotation.z += 0.6 * t;      // slow spin
+            this._portalTime += t;
+            this._portal.rotation.z += 0.6 * t;
             if (this._portalMat) {
                 this._portalMat.uniforms.uTime.value = this._portalTime;
             }
