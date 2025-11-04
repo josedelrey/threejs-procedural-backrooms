@@ -6,8 +6,6 @@ class Terrain {
         this._scene = scene;
         this._group = null;
         this._nRooms = Number.isInteger(params.nRooms) && params.nRooms > 0 ? params.nRooms : 12;
-        this._sun = null;
-        this._ceilLightMat = null;
 
         this.spawn = null;      // THREE.Vector3
         this._rooms = [];       // {i,j,cx,cz}
@@ -24,6 +22,15 @@ class Terrain {
         this._portalMat = null;
         this._portalTime = 0;
 
+        // Lighting
+        this._ambient = null;                 // Type 1: AmbientLight
+        this._roomLights = [];                // Type 2: per room SpotLight (ceiling)
+        this._accentLights = [];              // Type 3: sparse PointLight accents
+        this._shadowBudget = Number.isInteger(params.shadowBudget) ? Math.max(2, params.shadowBudget) : 8;
+        this._lightingFollowObj = null;
+
+        this._ceilLightMat = null;
+
         this._Init();
     }
 
@@ -31,7 +38,6 @@ class Terrain {
         const loader = new THREE.TextureLoader();
         const texBase = 'resources/textures/';
 
-        // Textures
         const carpetColor = loader.load(`${texBase}backrooms-carpet-diffuse.png`);
         const carpetNormal = loader.load(`${texBase}backrooms-carpet-normal.png`);
         const wallColor = loader.load(`${texBase}backrooms-wall-diffuse.png`);
@@ -45,7 +51,6 @@ class Terrain {
             t.magFilter = THREE.LinearFilter;
         }
 
-        // UV repeats
         const BASE_REPEAT = 20;
         const WALL_REPEAT = 4;
         const TILE_REPEAT = 12;
@@ -57,7 +62,6 @@ class Terrain {
         ceilTileColor.repeat.set(TILE_REPEAT, TILE_REPEAT);
         ceilLightCol.repeat.set(LIGHT_REPEAT, LIGHT_REPEAT);
 
-        // Dimensions
         const ROOM_SIZE = 300;
         const ROOM_HEIGHT = 40;
         const WALL_THICK = 2;
@@ -70,17 +74,6 @@ class Terrain {
 
         const group = new THREE.Group();
 
-        // Lights
-        const hemi = new THREE.HemisphereLight(0xf6f3cc, 0x2b2b1e, 0.7);
-        group.add(hemi);
-
-        const sun = new THREE.DirectionalLight(0xfff6d0, 0.35);
-        sun.position.set(1, 2, 1).multiplyScalar(500);
-        sun.castShadow = false;
-        group.add(sun);
-        this._sun = sun;
-
-        // Materials
         const floorMat = new THREE.MeshStandardMaterial({
             map: carpetColor,
             normalMap: carpetNormal,
@@ -95,20 +88,19 @@ class Terrain {
 
         const pillarMat = new THREE.MeshLambertMaterial({ map: wallColor });
 
-        // Shared geometries
         const GEO_FLOOR = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_CEILING = new THREE.PlaneGeometry(ROOM_SIZE, ROOM_SIZE);
         const GEO_LIGHT = new THREE.PlaneGeometry(CENTER_LIGHT_SIZE, CENTER_LIGHT_SIZE);
 
-        // Colliders
         const addRectCollider = (minX, maxX, minZ, maxZ) => {
             this._colliders.push({ minX, maxX, minZ, maxZ });
         };
 
-        // Wall helper
         const createWallXZ = (sizeX, height, sizeZ, mat, center, registerCollider = true) => {
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), mat);
             mesh.position.copy(center);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
             if (registerCollider) {
                 const cx = center.x, cz = center.z;
                 addRectCollider(cx - sizeX * 0.5, cx + sizeX * 0.5, cz - sizeZ * 0.5, cz + sizeZ * 0.5);
@@ -121,7 +113,6 @@ class Terrain {
             mesh.updateMatrix();
         };
 
-        // Walls with doorway
         const addWallWithDoor = (parent, isHorizontal, roomCenterXZ, mat) => {
             const half = ROOM_SIZE / 2;
             const yCenter = ROOM_HEIGHT / 2;
@@ -162,7 +153,7 @@ class Terrain {
             }
         };
 
-        // Maze generation (randomized DFS)
+        // Maze generation
         const targetRooms = this._nRooms;
         let rows = Math.floor(Math.sqrt(targetRooms));
         if (rows < 1) rows = 1;
@@ -233,6 +224,7 @@ class Terrain {
             const floor = new THREE.Mesh(GEO_FLOOR, floorMat);
             floor.rotation.x = -Math.PI / 2;
             floor.position.set(cx, 0, cz);
+            floor.receiveShadow = true;
             parent.add(floor); freeze(floor);
 
             const ceilingTiles = new THREE.Mesh(GEO_CEILING, ceilTileMat);
@@ -267,6 +259,8 @@ class Terrain {
         const pillarsPerRoom = 4;
         const instancedPillars = new THREE.InstancedMesh(pillarGeo, pillarMat, builtCells.length * pillarsPerRoom);
         instancedPillars.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        instancedPillars.castShadow = true;
+        instancedPillars.receiveShadow = true;
         let pIdx = 0;
         const m4 = new THREE.Matrix4();
         for (const c of builtCells) {
@@ -291,7 +285,6 @@ class Terrain {
         for (const c of builtCells) {
             const o = openings.get(key(c.i, c.j));
 
-            // North
             {
                 const wallZ = c.cz + ROOM_SIZE / 2;
                 if (o.N) {
@@ -303,7 +296,6 @@ class Terrain {
                 }
             }
 
-            // West
             {
                 const wallX = c.cx - ROOM_SIZE / 2;
                 const open = hasNeighbor(c.i - 1, c.j) ? o.W : false;
@@ -333,7 +325,7 @@ class Terrain {
             }
         }
 
-        // Build index map and graph
+        // Index and graph
         this._roomIndexByKey.clear();
         for (let idxR = 0; idxR < this._rooms.length; idxR++) {
             const r = this._rooms[idxR];
@@ -352,8 +344,40 @@ class Terrain {
         }
         this._spawnIndex = this._roomIndexByKey.get(`${this._rooms[0].i},${this._rooms[0].j}`) ?? 0;
 
+        // Lights
+        this._ambient = new THREE.AmbientLight(0xf2efcf, 0.12); // Type 1
+        group.add(this._ambient);
+
+        // Per room ceiling SpotLight with shadow disabled by default
+        for (const r of this._rooms) {
+            const spot = new THREE.SpotLight(0xfff6d0, 0.9, 420, Math.PI / 3.2, 0.5, 1.2); // Type 2
+            spot.position.set(r.cx, ROOM_HEIGHT - 4, r.cz);
+            spot.target.position.set(r.cx, 0, r.cz);
+            spot.castShadow = false;
+            spot.shadow.mapSize.set(1024, 1024);
+            spot.shadow.camera.near = 1;
+            spot.shadow.camera.far = 460;
+            spot.shadow.bias = -0.00012;
+            group.add(spot);
+            group.add(spot.target);
+            this._roomLights.push(spot);
+        }
+
+        // PointLight accents exactly at room centers (mid-height)
+        for (const r of this._rooms) {
+            const pl = new THREE.PointLight(0xffeaa0, 0.32, 360, 2.0);
+            pl.position.set(r.cx, ROOM_HEIGHT * 0.5, r.cz);
+            pl.castShadow = false;
+            group.add(pl);                  // <- was this._group.add(pl) and crashed
+            this._accentLights.push(pl);
+        }
+
+
         this._group = group;
         this._scene.add(this._group);
+
+        // Enable initial shadow allocation around spawn
+        this._enableShadowsNear(new THREE.Vector3(this.spawn.x, 0, this.spawn.z));
     }
 
     getMesh() { return this._group; }
@@ -361,7 +385,16 @@ class Terrain {
     getRoomCenters() { return this._rooms.map(r => ({ cx: r.cx, cz: r.cz })); }
     getColliders() { return this._colliders; }
 
-    // BFS distances from a room index
+    enableShadows(renderer) {
+        if (!renderer) return;
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+
+    followLighting(obj3D) {
+        this._lightingFollowObj = obj3D || null;
+    }
+
     _bfsDistancesFrom(startIndex) {
         const dist = new Array(this._rooms.length).fill(Infinity);
         const q = [];
@@ -381,7 +414,6 @@ class Terrain {
         return dist;
     }
 
-    // Nearest room index to world position
     _nearestRoomIndexTo(x, z) {
         if (!this._rooms.length) return 0;
         let best = 0;
@@ -395,7 +427,29 @@ class Terrain {
         return best;
     }
 
-    // Furthest room center from a world position
+    _enableShadowsNear(worldPos) {
+        if (!this._roomLights.length) return;
+
+        for (const s of this._roomLights) s.castShadow = false;
+
+        const pairs = [];
+        for (let i = 0; i < this._rooms.length; i++) {
+            const r = this._rooms[i];
+            const dx = worldPos.x - r.cx;
+            const dz = worldPos.z - r.cz;
+            const d2 = dx * dx + dz * dz;
+            pairs.push([d2, i]);
+        }
+        pairs.sort((a, b) => a[0] - b[0]);
+
+        const count = Math.min(this._shadowBudget, this._roomLights.length);
+        for (let k = 0; k < count; k++) {
+            const idxRoom = pairs[k][1];
+            const s = this._roomLights[idxRoom];
+            s.castShadow = true;
+        }
+    }
+
     getFurthestRoomCenterFromPosition(pos) {
         if (!pos || !pos.isVector3 || !this._rooms.length) return this.getFirstRoomCenter();
         const startIdx = this._nearestRoomIndexTo(pos.x, pos.z);
@@ -409,7 +463,6 @@ class Terrain {
         return new THREE.Vector3(r.cx, 0, r.cz);
     }
 
-    // Spawn a spiral-shader portal at the furthest room
     // opts: { radius, tube, color1, color2, speed, turns, thickness, y }
     spawnPortalAtFurthest(fromWorldPos, opts = {}) {
         const radius = opts.radius ?? 28;
@@ -421,7 +474,6 @@ class Terrain {
         const turns = opts.turns ?? 8.0;
         const thickness = opts.thickness ?? 0.35;
 
-        // Remove existing portal
         if (this._portal) {
             this._group.remove(this._portal);
             this._portal.geometry?.dispose?.();
@@ -438,10 +490,8 @@ class Terrain {
 
         const target = this.getFurthestRoomCenterFromPosition(fromWorldPos);
 
-        // Geometry
         const geo = new THREE.TorusGeometry(radius, tube, 16, 48);
 
-        // Shader
         const mat = new THREE.ShaderMaterial({
             uniforms: {
                 uTime: { value: 0 },
@@ -456,8 +506,7 @@ class Terrain {
         void main() {
           vUv = uv;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
+        }`,
             fragmentShader: `
         precision mediump float;
         varying vec2 vUv;
@@ -473,17 +522,14 @@ class Terrain {
           float r = length(p) + 1e-4;
           float a = atan(p.y, p.x);
 
-          // Spiral bands
           float s = sin(uTurns * a + 6.0 * log(r) - uSpeed * uTime);
           float band = smoothstep(uThickness, uThickness - 0.15, abs(s));
 
-          // Edge fade
           float edge = 1.0 - smoothstep(0.46, 0.5, r);
 
           vec3 col = mix(uColor1, uColor2, band);
           gl_FragColor = vec4(col, edge * 0.95);
-        }
-      `,
+        }`,
             side: THREE.DoubleSide,
             transparent: true,
             depthWrite: false,
@@ -508,7 +554,6 @@ class Terrain {
         return ring;
     }
 
-    // Room at exactly N steps or fallback
     getRoomCenterAtSteps(steps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
 
@@ -539,7 +584,6 @@ class Terrain {
         return new THREE.Vector3(r.cx, 0, r.cz);
     }
 
-    // Random room at least minSteps from spawn
     getRandomFarRoomCenter(minSteps = 3) {
         if (!this._rooms.length) return new THREE.Vector3(0, 0, 0);
         const dist = this._bfsDistancesFrom(this._spawnIndex ?? 0);
@@ -561,11 +605,7 @@ class Terrain {
             const f = 0.92 + 0.04 * Math.sin(t * 3.2) + 0.02 * Math.sin(t * 17.0) + 0.01 * Math.sin(t * 27.7);
             this._ceilLightMat.color.setScalar(Math.max(0.8, Math.min(1.1, f)));
         }
-        if (this._sun) {
-            this._sun.intensity = 0.33 + 0.02 * Math.sin(t * 0.35);
-        }
 
-        // Portal animation
         if (this._portal) {
             this._portalTime += t;
             this._portal.rotation.z += 0.6 * t;
@@ -575,6 +615,10 @@ class Terrain {
             if (this._portalLight) {
                 this._portalLight.intensity = 0.5 + 0.2 * Math.sin(this._portalTime * 2.6);
             }
+        }
+
+        if (this._lightingFollowObj) {
+            this._enableShadowsNear(this._lightingFollowObj.position);
         }
     }
 
