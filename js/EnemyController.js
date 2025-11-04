@@ -22,7 +22,7 @@ class EnemyController {
         this._attackMargin = typeof params.attackMargin === 'number' ? params.attackMargin : 1.0;
         this._attackHysteresis = typeof params.attackHysteresis === 'number' ? params.attackHysteresis : 20;
 
-        // Timing (anti thrash)
+        // Timers for state stability
         this._attackCooldown = typeof params.attackCooldown === 'number' ? params.attackCooldown : 0.8;
         this._minAttackHold = typeof params.minAttackHold === 'number' ? params.minAttackHold : 0.25;
         this._minChaseHold = typeof params.minChaseHold === 'number' ? params.minChaseHold : 0.2;
@@ -47,14 +47,14 @@ class EnemyController {
         // Attack timers
         this._attackPlaying = false;
         this._attackStartTime = -Infinity;
-        this._attackDuration = 0.6;  // overridden by clip duration if present
+        this._attackDuration = 0.6;  // may be overwritten by clip
         this._lastAttackEnd = -Infinity;
 
         // Health
         this._hpMax = typeof params.hpMax === 'number' ? params.hpMax : 60;
         this._hp = this._hpMax;
 
-        // Hurt / invulnerability
+        // Hurt and invuln
         this._hurtActive = false;
         this._hurtEndTime = -Infinity;
         this._hurtDuration = typeof params.hurtDuration === 'number' ? params.hurtDuration : 0.5;
@@ -77,7 +77,7 @@ class EnemyController {
         this._anims = {};
         this._currentAction = null;
 
-        // Three.js object
+        // Scene object
         this._obj = null;
 
         this._load();
@@ -88,18 +88,18 @@ class EnemyController {
     // HP API
     damage(n, hitDir = null) {
         const now = this._time;
-        if (now < this._invulnEndTime) return; // invulnerability window
+        if (now < this._invulnEndTime) return; // invulnerability
 
         const amount = Math.max(0, n | 0);
         if (amount <= 0) return;
 
         this._hp = Math.max(0, this._hp - amount);
 
-        // Cancel attack and start cooldown
+        // Stop attack and start cooldown
         this._attackPlaying = false;
         this._lastAttackEnd = this._time;
 
-        // Trigger hurt
+        // Enter hurt
         this._triggerHurt();
 
         // Knockback
@@ -203,12 +203,12 @@ class EnemyController {
             animLoader.load(walkFile, (a) => onAnim('walk', a));
             if (runFile) animLoader.load(runFile, (a) => onAnim('run', a));
             if (attackFile) animLoader.load(attackFile, (a) => onAnim('attack', a));
-            // Load hurt; ignore failure
+            // Load hurt and ignore failure
             animLoader.load(hurtFile, (a) => onAnim('hurt', a), undefined, () => { });
         });
     }
 
-    // Allow forced restart of same action
+    // Allow restart of same action
     _play(name, fade = 0.12, force = false) {
         if (!this._mixer || !this._anims[name]) return;
         const next = this._anims[name].action;
@@ -231,7 +231,7 @@ class EnemyController {
     _triggerHurt() {
         const a = this._anims.hurt?.action;
         if (!a) {
-            // No clip; still gate behavior briefly
+            // No clip. Still gate behavior briefly
             this._hurtActive = true;
             this._hurtEndTime = this._time + this._hurtDuration;
             this._invulnEndTime = this._time + this._invulnDuration;
@@ -314,7 +314,7 @@ class EnemyController {
     }
 
     _maybeChangeState(dist, canAttack) {
-        // No state changes while hurt
+        // No transitions during hurt
         if (this._hurtActive) return;
 
         if (this._stateHold > 0) return;
@@ -373,7 +373,7 @@ class EnemyController {
         // Hurt timers
         if (this._hurtActive && this._time >= this._hurtEndTime) {
             this._hurtActive = false;
-            // After hurt, fade to idle for a stable base
+            // After hurt, return to idle
             if (this._anims.idle?.action) this._play('idle', 0.06, true);
         }
 
@@ -439,7 +439,7 @@ class EnemyController {
             this._obj.position.copy(next);
         }
 
-        // Animation choice
+        // Animation selection
         if (this._hurtActive) {
             if (this._anims.hurt && this._currentAction !== this._anims.hurt.action) {
                 this._play('hurt', 0.06, true);

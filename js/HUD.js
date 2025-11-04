@@ -14,7 +14,7 @@ export class HUD {
 
         const css = document.createElement('style');
         css.textContent = `
-      /* Minimal PS1 style HUD */
+      /* PS1 style minimal HUD */
       #hud {
         position: fixed;
         top: 22px;
@@ -72,7 +72,7 @@ export class HUD {
     `;
         document.head.appendChild(css);
 
-        // Pixel font
+        // Load pixel font
         const font = document.createElement('link');
         font.rel = 'stylesheet';
         font.href = 'https://fonts.googleapis.com/css2?family=VT323&display=swap';

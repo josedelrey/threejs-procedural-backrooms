@@ -27,7 +27,7 @@ class BasicCharacterController {
         this._colliders = Array.isArray(params.colliders) ? params.colliders : [];
         this._getHeightAt = typeof params.getHeightAt === 'function' ? params.getHeightAt : (() => 0);
 
-        // Run multiplier (default 8)
+        // Run speed multiplier
         this._runMultiplier = typeof params.runMultiplier === 'number' ? params.runMultiplier : 8.0;
 
         // Health
@@ -35,12 +35,12 @@ class BasicCharacterController {
         this._hp = 100;
         this._onHpChange = typeof params.onHpChange === 'function' ? params.onHpChange : (() => { });
 
-        // Animations and FSM
+        // Animation system
         this._animations = {};
         this._input = new BasicCharacterControllerInput();
         this._stateMachine = new CharacterFSM(new BasicCharacterControllerProxy(this._animations));
 
-        // Hurt override
+        // Hurt animation handling
         this._hurtActive = false;
         this._hurtUntilMS = 0;
         this._hurtDuration = 0.5;
@@ -55,10 +55,13 @@ class BasicCharacterController {
         loader.load('character_rigged.fbx', (fbx) => {
             fbx.scale.setScalar(0.3);
             fbx.traverse(c => { c.castShadow = true; });
+
+            // Remove lights from model
             const rm = [];
             fbx.traverse(o => { if (o.isLight) rm.push(o); });
             rm.forEach(l => l.parent && l.parent.remove(l));
 
+            // Adjust materials
             fbx.traverse(o => {
                 if (!o.isMesh) return;
                 const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -135,6 +138,7 @@ class BasicCharacterController {
         hurt.reset();
         hurt.enabled = true;
         hurt.paused = false;
+
         try {
             for (const k of Object.keys(this._animations)) {
                 const a = this._animations[k].action;
@@ -185,6 +189,7 @@ class BasicCharacterController {
     Update(timeInSeconds) {
         if (!this._target) return;
 
+        // Handle hurt animation timing and recovery
         if (!this._hurtActive) {
             if (this._stateMachine._currentState) {
                 this._stateMachine.Update(timeInSeconds, this._input);
@@ -192,12 +197,26 @@ class BasicCharacterController {
         } else {
             if (performance.now() >= this._hurtUntilMS) {
                 this._hurtActive = false;
-                if (this._animations.idle?.action) {
-                    this._animations.idle.action.reset().fadeIn(0.06).play();
+
+                const hurt = this._animations.hurt?.action || null;
+                const base = this._lastBaseAction || this._animations.idle?.action || null;
+
+                if (base) {
+                    if (hurt) {
+                        try { hurt.crossFadeTo(base, 0.08, false); } catch { }
+                    }
+                    base.reset().fadeIn(0.08).play();
                 }
+
+                if (hurt) {
+                    hurt.enabled = false;
+                    hurt.stop();
+                }
+                this._lastBaseAction = null;
             }
         }
 
+        // Apply movement and rotation
         const v = this._velocity;
         const dec = new THREE.Vector3(v.x * this._decceleration.x, v.y * this._decceleration.y, v.z * this._decceleration.z);
         dec.multiplyScalar(timeInSeconds);

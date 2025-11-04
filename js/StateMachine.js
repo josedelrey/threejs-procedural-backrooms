@@ -1,3 +1,4 @@
+// Simple FSM core
 class FiniteStateMachine {
     constructor() {
         this._states = {};
@@ -32,6 +33,7 @@ class FiniteStateMachine {
 }
 
 
+// FSM for character locomotion
 class CharacterFSM extends FiniteStateMachine {
     constructor(proxy) {
         super();
@@ -47,6 +49,7 @@ class CharacterFSM extends FiniteStateMachine {
 }
 
 
+// Base state
 class State {
     constructor(parent) {
         this._parent = parent;
@@ -58,6 +61,7 @@ class State {
 }
 
 
+// Walking state
 class WalkState extends State {
     constructor(parent) {
         super(parent);
@@ -106,6 +110,7 @@ class WalkState extends State {
 }
 
 
+// Running state
 class RunState extends State {
     constructor(parent) {
         super(parent);
@@ -154,6 +159,7 @@ class RunState extends State {
 }
 
 
+// Idle state
 class IdleState extends State {
     constructor(parent) {
         super(parent);

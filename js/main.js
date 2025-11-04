@@ -5,6 +5,7 @@ import { ThirdPersonCamera } from './Camera.js';
 import { Terrain } from './Terrain.js';
 import { EnemyController } from './EnemyController.js';
 import { HUD } from './HUD.js';
+import { Minimap } from './Minimap.js';
 
 class EscapeBackrooms {
     constructor() { this._Initialize(); }
@@ -44,6 +45,15 @@ class EscapeBackrooms {
         this._terrain = new Terrain(this._scene);
         this._spawn = this._terrain.getFirstRoomCenter();
 
+        this._minimap = new Minimap({
+            terrain: this._terrain,
+            size: 220,
+            getPlayer: () => this._controls?._target ?? null,
+            getEnemies: () => this._enemy && this._enemy.object3D ? [this._enemy.object3D] : [],
+            theme: {
+            }
+        });
+
         // Camera start
         this._camera.position.set(this._spawn.x, this._spawn.y + 20, this._spawn.z + 50);
         this._camera.lookAt(this._spawn);
@@ -60,7 +70,7 @@ class EscapeBackrooms {
         this._LoadPlayer();
         this._SpawnEnemy();
 
-        // Debug keys
+        // Debug hotkeys
         this._onKey = (e) => {
             if (this._gameWon || this._gameLost) return;
             if (e.code === 'KeyH') this._controls && this._controls.damage(7);
@@ -249,7 +259,7 @@ class EscapeBackrooms {
         this._rafHandle = requestAnimationFrame((t) => {
             if (this._previousRAF === null) this._previousRAF = t;
 
-            // Render a final frame when ending
+            // Render once per frame
             this._threejs.render(this._scene, this._camera);
 
             if (!this._gameWon && !this._gameLost) {
@@ -268,14 +278,14 @@ class EscapeBackrooms {
         if (this._terrain) this._terrain.Update(dt);
         if (this._enemy) this._enemy.Update(dt);
 
-        // Spawn portal once the player model exists
+        // Spawn portal when player exists
         if (!this._portalSpawned && this._controls && this._controls._target) {
             const pos = this._controls._target.position;
             this._terrain.spawnPortalAtFurthest(pos, { radius: 30, tube: 6, y: 0 });
             this._portalSpawned = true;
         }
 
-        // Win when close to portal
+        // Win near portal
         const portal = this._terrain._portal; // or this._terrain.getPortalObject()
         if (!this._gameWon && !this._gameLost && portal && this._controls && this._controls._target) {
             const playerPos = this._controls._target.position;
@@ -290,6 +300,8 @@ class EscapeBackrooms {
                 return;
             }
         }
+
+        if (this._minimap) this._minimap.update();
 
         this._thirdPersonCamera.Update(dt);
     }

@@ -1,15 +1,15 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.118/build/three.module.js';
 
-/** Terrain: DFS-carved maze and portal utilities */
+/** Terrain: DFS maze generation and portal system */
 class Terrain {
     constructor(scene, params = {}) {
         this._scene = scene;
         this._group = null;
         this._nRooms = Number.isInteger(params.nRooms) && params.nRooms > 0 ? params.nRooms : 12;
 
-        this.spawn = null;      // THREE.Vector3
-        this._rooms = [];       // {i,j,cx,cz}
-        this._colliders = [];   // {minX,maxX,minZ,maxZ}
+        this.spawn = null;      // THREE.Vector3 spawn point
+        this._rooms = [];       // {i,j,cx,cz} room list
+        this._colliders = [];   // {minX,maxX,minZ,maxZ} AABB list
 
         // Room graph
         this._roomIndexByKey = new Map();
@@ -24,8 +24,8 @@ class Terrain {
 
         // Lighting
         this._ambient = null;                 // Type 1: AmbientLight
-        this._roomLights = [];                // Type 2: per room SpotLight (ceiling)
-        this._accentLights = [];              // Type 3: sparse PointLight accents
+        this._roomLights = [];                // Type 2: per room SpotLight
+        this._accentLights = [];              // Type 3: PointLight accents
         this._shadowBudget = Number.isInteger(params.shadowBudget) ? Math.max(2, params.shadowBudget) : 8;
         this._lightingFollowObj = null;
 
@@ -63,6 +63,7 @@ class Terrain {
         ceilLightCol.repeat.set(LIGHT_REPEAT, LIGHT_REPEAT);
 
         const ROOM_SIZE = 300;
+        this._roomSize = ROOM_SIZE;
         const ROOM_HEIGHT = 40;
         const WALL_THICK = 2;
         const PILLAR_SIZE = 20;
@@ -281,7 +282,7 @@ class Terrain {
 
         const hasNeighbor = (i, j) => builtSet.has(key(i, j));
 
-        // Walls with doors
+        // Walls with or without doors
         for (const c of builtCells) {
             const o = openings.get(key(c.i, c.j));
 
@@ -348,7 +349,7 @@ class Terrain {
         this._ambient = new THREE.AmbientLight(0xf2efcf, 0.12); // Type 1
         group.add(this._ambient);
 
-        // Per room ceiling SpotLight with shadow disabled by default
+        // Per room ceiling SpotLight. Shadows off by default
         for (const r of this._rooms) {
             const spot = new THREE.SpotLight(0xfff6d0, 0.9, 420, Math.PI / 3.2, 0.5, 1.2); // Type 2
             spot.position.set(r.cx, ROOM_HEIGHT - 4, r.cz);
@@ -363,12 +364,12 @@ class Terrain {
             this._roomLights.push(spot);
         }
 
-        // PointLight accents exactly at room centers (mid-height)
+        // PointLight accents at room centers
         for (const r of this._rooms) {
             const pl = new THREE.PointLight(0xffeaa0, 0.32, 360, 2.0);
             pl.position.set(r.cx, ROOM_HEIGHT * 0.5, r.cz);
             pl.castShadow = false;
-            group.add(pl);                  // <- was this._group.add(pl) and crashed
+            group.add(pl);
             this._accentLights.push(pl);
         }
 
@@ -376,7 +377,18 @@ class Terrain {
         this._group = group;
         this._scene.add(this._group);
 
-        // Enable initial shadow allocation around spawn
+        this._roomBounds = (() => {
+        let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (const r of this._rooms) {
+            minX = Math.min(minX, r.cx - this._roomSize * 0.5);
+            maxX = Math.max(maxX, r.cx + this._roomSize * 0.5);
+            minZ = Math.min(minZ, r.cz - this._roomSize * 0.5);
+            maxZ = Math.max(maxZ, r.cz + this._roomSize * 0.5);
+        }
+        return {minX, maxX, minZ, maxZ};
+        })();
+
+        // Enable initial shadow allocation near spawn
         this._enableShadowsNear(new THREE.Vector3(this.spawn.x, 0, this.spawn.z));
     }
 
@@ -384,6 +396,10 @@ class Terrain {
     getFirstRoomCenter() { return this.spawn ? this.spawn.clone() : new THREE.Vector3(0, 0, 0); }
     getRoomCenters() { return this._rooms.map(r => ({ cx: r.cx, cz: r.cz })); }
     getColliders() { return this._colliders; }
+    getRoomSize() { return this._roomSize ?? 300; }
+    getRoomsFull() { return this._rooms.map(r => ({...r})); } // i, j, cx, cz
+    getBounds() { return {...this._roomBounds}; }
+    getPortalPosition() { return this._portal ? this._portal.position.clone() : null; }
 
     enableShadows(renderer) {
         if (!renderer) return;
