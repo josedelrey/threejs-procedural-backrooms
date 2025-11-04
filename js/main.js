@@ -42,7 +42,7 @@ class EscapeBackrooms {
         this._hud.set(100);
 
         // Terrain and spawn
-        this._terrain = new Terrain(this._scene);
+        this._terrain = new Terrain(this._scene, { shadowBudget: 3 });
         this._spawn = this._terrain.getFirstRoomCenter();
 
         this._minimap = new Minimap({
@@ -210,6 +210,8 @@ class EscapeBackrooms {
         };
         this._controls = new BasicCharacterController(params);
 
+        this._terrain.followLighting(() => this._controls?._target ?? null);
+
         this._thirdPersonCamera = new ThirdPersonCamera({
             camera: this._camera,
             target: this._controls,
@@ -276,6 +278,11 @@ class EscapeBackrooms {
         if (this._mixers) this._mixers.forEach(m => m.update(dt));
         if (this._controls) this._controls.Update(dt);
         if (this._terrain) this._terrain.Update(dt);
+        if (this._terrain && this._terrain.didShadowSetChange && this._terrain.didShadowSetChange()) {
+            // force shadow re-render because the set of casting lights changed
+            this._threejs.shadowMap.needsUpdate = true;
+            this._terrain.clearShadowSetChanged();
+        }
         if (this._enemy) this._enemy.Update(dt);
 
         // Spawn portal when player exists

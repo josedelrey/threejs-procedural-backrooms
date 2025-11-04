@@ -29,6 +29,10 @@ class Terrain {
         this._shadowBudget = Number.isInteger(params.shadowBudget) ? Math.max(2, params.shadowBudget) : 8;
         this._lightingFollowObj = null;
 
+        this._lightingFollowGetter = null;
+        this._lastShadowRooms = null;
+        this._shadowSetChanged = false;
+
         this._ceilLightMat = null;
 
         this._Init();
@@ -400,6 +404,8 @@ class Terrain {
     getRoomsFull() { return this._rooms.map(r => ({...r})); } // i, j, cx, cz
     getBounds() { return {...this._roomBounds}; }
     getPortalPosition() { return this._portal ? this._portal.position.clone() : null; }
+    didShadowSetChange() { return this._shadowSetChanged; }
+    clearShadowSetChanged() { this._shadowSetChanged = false; }
 
     enableShadows(renderer) {
         if (!renderer) return;
@@ -407,8 +413,9 @@ class Terrain {
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     }
 
-    followLighting(obj3D) {
-        this._lightingFollowObj = obj3D || null;
+    followLighting(objOrGetter) {
+        // Allow either a direct Object3D or a () => Object3D
+        this._lightingFollowGetter = typeof objOrGetter === 'function' ? objOrGetter : () => objOrGetter || null;
     }
 
     _bfsDistancesFrom(startIndex) {
@@ -443,28 +450,43 @@ class Terrain {
         return best;
     }
 
+    // tweak _enableShadowsNear so we can detect changes
     _enableShadowsNear(worldPos) {
         if (!this._roomLights.length) return;
 
-        for (const s of this._roomLights) s.castShadow = false;
-
+        // pick nearest rooms
         const pairs = [];
         for (let i = 0; i < this._rooms.length; i++) {
             const r = this._rooms[i];
             const dx = worldPos.x - r.cx;
             const dz = worldPos.z - r.cz;
-            const d2 = dx * dx + dz * dz;
-            pairs.push([d2, i]);
+            pairs.push([dx*dx + dz*dz, i]);
         }
-        pairs.sort((a, b) => a[0] - b[0]);
+        pairs.sort((a,b) => a[0]-b[0]);
 
         const count = Math.min(this._shadowBudget, this._roomLights.length);
-        for (let k = 0; k < count; k++) {
-            const idxRoom = pairs[k][1];
-            const s = this._roomLights[idxRoom];
-            s.castShadow = true;
+        const newSet = new Set();
+        for (let k = 0; k < count; k++) newSet.add(pairs[k][1]);
+
+        // compare with previous allocation
+        let changed = false;
+        if (!this._lastShadowRooms || this._lastShadowRooms.size !== newSet.size) {
+            changed = true;
+        } else {
+            for (const i of newSet) if (!this._lastShadowRooms.has(i)) { changed = true; break; }
+        }
+
+        if (changed) {
+            // disable all first
+            for (const s of this._roomLights) s.castShadow = false;
+            // enable only nearest
+            for (const i of newSet) this._roomLights[i].castShadow = true;
+
+            this._lastShadowRooms = newSet;
+            this._shadowSetChanged = true; // tell renderer to refresh shadow maps
         }
     }
+
 
     getFurthestRoomCenterFromPosition(pos) {
         if (!pos || !pos.isVector3 || !this._rooms.length) return this.getFirstRoomCenter();
@@ -633,8 +655,11 @@ class Terrain {
             }
         }
 
-        if (this._lightingFollowObj) {
-            this._enableShadowsNear(this._lightingFollowObj.position);
+        if (this._lightingFollowGetter) {
+            const obj = this._lightingFollowGetter();
+            if (obj && obj.position) {
+                this._enableShadowsNear(obj.position);
+            }
         }
     }
 
